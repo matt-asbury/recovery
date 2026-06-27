@@ -97,4 +97,4 @@ Use the GitHub issue templates for bugs and feature requests. Include macOS vers
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+By contributing, you agree that your contributions will be licensed under the [GNU General Public License v3.0](LICENSE) (GPL-3.0-only).

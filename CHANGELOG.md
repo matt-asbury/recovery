@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Step-by-step wizard UX: one stage visible at a time (source → scan → review → recover) with gated navigation.
 
 ### Changed
+- Project license changed from PolyForm Noncommercial 1.0.0 to GNU General Public License v3.0.
 - Quick scan now tags results as `filesystem` and shows basename filenames.
 - Recovery export validates destination paths and rejects traversal in filenames.
 - HTTP API rejects non-local clients and oversized JSON bodies.
