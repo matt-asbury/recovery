@@ -1,0 +1,41 @@
+---
+name: Bug report
+about: Report a problem with Recovery
+title: "[Bug] "
+labels: bug
+assignees: []
+---
+
+## Summary
+
+What went wrong?
+
+## Steps to reproduce
+
+1.
+2.
+3.
+
+## Expected behavior
+
+What should have happened?
+
+## Actual behavior
+
+What happened instead?
+
+## Environment
+
+- macOS version:
+- Python version (`python3 --version`):
+- Recovery version or commit:
+- Running with `sudo`? yes / no
+- Scan mode: deep / quick / disk image
+
+## Logs or screenshots
+
+If helpful, include terminal output, browser console errors, or screenshots.
+
+## Additional context
+
+Anything else that might help reproduce or diagnose the issue.
