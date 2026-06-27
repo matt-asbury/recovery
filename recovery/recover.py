@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 from recovery.models import FoundFile
 from recovery.device_io import write_bytes
+from recovery.security import safe_destination_path, safe_filename, validate_recovery_destination
 
 
 @dataclass
@@ -24,6 +25,7 @@ def recover_files(
     on_progress: Optional[Callable[[int, int, RecoveryResult], None]] = None,
 ) -> list[RecoveryResult]:
     """Copy or carve selected files to a destination directory."""
+    destination_dir = validate_recovery_destination(destination_dir)
     os.makedirs(destination_dir, exist_ok=True)
     results: list[RecoveryResult] = []
     total = len(files)
@@ -59,10 +61,10 @@ def _carve_file(item: FoundFile, dest_path: str) -> None:
 
 
 def _unique_path(directory: str, filename: str) -> str:
-    base, ext = os.path.splitext(filename)
-    candidate = os.path.join(directory, filename)
+    base, ext = os.path.splitext(safe_filename(filename))
+    candidate = safe_destination_path(directory, f"{base}{ext}")
     counter = 1
     while os.path.exists(candidate):
-        candidate = os.path.join(directory, f"{base}_{counter}{ext}")
+        candidate = safe_destination_path(directory, f"{base}_{counter}{ext}")
         counter += 1
     return candidate
