@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import plistlib
 import subprocess
+from dataclasses import replace
 from typing import Optional
 
-from recovery.models import VolumeInfo
+from recovery.models import PartitionInfo, VolumeInfo
+from recovery.partitions import parse_partitions
 
 
 def volume_from_image(image_path: str) -> VolumeInfo:
@@ -19,7 +21,7 @@ def volume_from_image(image_path: str) -> VolumeInfo:
         raise ValueError(f"Disk image is empty: {path}")
 
     name = os.path.basename(path)
-    return VolumeInfo(
+    volume = VolumeInfo(
         device_id=path,
         name=name,
         size_bytes=size,
@@ -30,6 +32,42 @@ def volume_from_image(image_path: str) -> VolumeInfo:
         whole_disk=True,
         is_disk_image=True,
         image_path=path,
+    )
+    return enrich_volume_partitions(volume)
+
+
+def enrich_volume_partitions(volume: VolumeInfo) -> VolumeInfo:
+    """Parse partition tables for whole-disk images and raw devices."""
+    if not volume.whole_disk and not volume.is_disk_image:
+        return volume
+
+    read_path = volume.read_path
+    try:
+        partitions = parse_partitions(read_path, volume.size_bytes)
+    except OSError:
+        return volume
+    if not partitions:
+        return volume
+
+    return replace(volume, partitions=tuple(partitions))
+
+
+def volume_for_partition(volume: VolumeInfo, partition_index: Optional[int]) -> VolumeInfo:
+    """Return a scan target scoped to one partition, or the full volume."""
+    if partition_index is None or partition_index < 0:
+        return replace(volume, scan_start_byte=0, scan_size_bytes=None)
+
+    if partition_index >= len(volume.partitions):
+        raise ValueError(f"Invalid partition index: {partition_index}")
+
+    partition = volume.partitions[partition_index]
+    label = partition.name or partition.type_label
+    return replace(
+        volume,
+        name=f"{volume.name} — {label}",
+        scan_start_byte=partition.start_byte,
+        scan_size_bytes=partition.size_bytes,
+        whole_disk=False,
     )
 
 
@@ -102,7 +140,7 @@ def _entry_to_volume(
 
     content = entry.get("Content", "")
     if content in ("GUID_partition_scheme", "FDisk_partition_scheme"):
-        return VolumeInfo(
+        volume = VolumeInfo(
             device_id=f"/dev/{device_id}",
             name=str(entry.get("VolumeName") or content or device_id),
             size_bytes=size,
@@ -112,6 +150,7 @@ def _entry_to_volume(
             is_internal=_is_internal(entry, parent_internal),
             whole_disk=True,
         )
+        return enrich_volume_partitions(volume)
 
     if content == "Apple_APFS_Container":
         return VolumeInfo(

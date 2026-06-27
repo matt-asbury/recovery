@@ -86,7 +86,7 @@ class DeepScanner:
     ) -> None:
         device = self.volume.read_path
         try:
-            total = self.volume.size_bytes or os.path.getsize(device)
+            media_size = self.volume.size_bytes or os.path.getsize(device)
         except OSError as exc:
             self.progress.status = ScanStatus.ERROR
             if self.volume.is_disk_image:
@@ -99,18 +99,38 @@ class DeepScanner:
             self._notify_progress(on_progress)
             return
 
+        scan_start = max(0, self.volume.scan_start_byte)
+        scan_size = self.volume.scan_size_bytes
+        if scan_size is None:
+            scan_size = max(0, media_size - scan_start)
+        else:
+            scan_size = min(scan_size, max(0, media_size - scan_start))
+
+        if scan_size <= 0:
+            self.progress.status = ScanStatus.ERROR
+            self.progress.error = "Selected scan region is empty or beyond media size."
+            self._notify_progress(on_progress)
+            return
+
+        total = scan_size
         self.progress.total_bytes = total
         label = self.volume.name if self.volume.is_disk_image else device
-        self.progress.current_message = f"Scanning {label}..."
+        if self.volume.is_partition_scan:
+            self.progress.current_message = (
+                f"Scanning {label} (0x{scan_start:x}–0x{scan_start + scan_size:x})..."
+            )
+        else:
+            self.progress.current_message = f"Scanning {label}..."
         self._start_time = time.monotonic()
 
         try:
             with open(device, "rb", buffering=0) as handle:
-                offset = 0
+                handle.seek(scan_start)
+                offset = scan_start
                 carry = b""
 
-                while offset < total and not self._stop_event.is_set():
-                    read_size = min(self.chunk_size, total - offset)
+                while offset < scan_start + total and not self._stop_event.is_set():
+                    read_size = min(self.chunk_size, scan_start + total - offset)
                     chunk = handle.read(read_size)
                     if not chunk:
                         break
@@ -123,7 +143,7 @@ class DeepScanner:
                     carry = window[-self.overlap :] if len(window) > self.overlap else window
                     offset += len(chunk)
 
-                    self.progress.bytes_scanned = offset
+                    self.progress.bytes_scanned = offset - scan_start
                     self._update_timing()
                     self._notify_progress(on_progress)
 
