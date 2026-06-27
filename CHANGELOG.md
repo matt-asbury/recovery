@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Open-source project structure: LICENSE, CI, tests, contributor docs.
+### Changed
+- License changed from MIT to PolyForm Noncommercial License 1.0.0.
 
 ## [0.1.0] - 2026-06-27
 

@@ -68,4 +68,4 @@ Use the GitHub issue templates for bugs and feature requests. Include macOS vers
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions will be licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).

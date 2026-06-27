@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "macOS disk recovery tool with deep file carving and a browser-based UI"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "PolyForm Noncommercial License 1.0.0" }
 authors = [{ name = "Recovery contributors" }]
 keywords = ["macos", "recovery", "disk", "carving", "forensics", "data-recovery"]
 classifiers = [
@@ -12,7 +12,7 @@ classifiers = [
     "Environment :: MacOS X",
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: MIT License",
+    "License :: Free To Use But Restricted",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

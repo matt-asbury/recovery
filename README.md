@@ -1,7 +1,7 @@
 # Recovery
 
 [![CI](https://github.com/matt-asbury/recovery/actions/workflows/ci.yml/badge.svg)](https://github.com/matt-asbury/recovery/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 A macOS disk recovery tool that scans attached volumes (including damaged or unmounted disks) using file carving, lists recoverable files, and exports them to another drive.
@@ -151,4 +151,10 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+You may use, modify, and share this software for **noncommercial purposes** — for example personal recovery work, research, education, or use by nonprofits and government institutions.
+
+**Commercial use is not permitted.** You may not sell this software, sell access to it, or sell products or services that are primarily based on it (including modified or derivative versions).
+
+See the [license text](LICENSE) and https://polyformproject.org/licenses/noncommercial/1.0.0 for full terms.
