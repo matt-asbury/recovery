@@ -31,6 +31,7 @@ from recovery.security import (
     validate_readable_file_path,
     validate_recovery_destination,
 )
+from recovery.encryption import encryption_to_dict, scan_mode_error
 from recovery.partitions import partition_to_dict
 from recovery.volumes import list_volumes, volume_for_partition, volume_from_image
 
@@ -206,6 +207,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                         partition_to_dict(partition)
                         for partition in volume.partitions
                     ],
+                    "encryption": encryption_to_dict(volume.encryption),
                 }
                 for index, volume in enumerate(STATE.volumes)
             ]
@@ -269,15 +271,14 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         categories = body.get("categories") or []
         category_set = {str(item) for item in categories} if categories else None
 
+        scan_error = scan_mode_error(volume, mode)
+        if scan_error:
+            self._respond_json({"error": scan_error}, status=400)
+            return
+
         if mode == "quick":
             if volume.is_disk_image:
                 self._respond_json({"error": "Quick scan is not available for disk images"}, status=400)
-                return
-            if not volume.mount_point:
-                self._respond_json(
-                    {"error": "Quick scan requires a mounted volume. Use deep scan instead."},
-                    status=400,
-                )
                 return
             with STATE.lock:
                 STATE.results.clear()
@@ -907,6 +908,7 @@ INDEX_HTML = """<!DOCTYPE html>
         Deep scans of raw disks require administrator access. Restart with:
         <code>sudo ./recovery.sh</code>
       </div>
+      <div id="encryption-banner" class="banner" hidden></div>
       <section class="panel">
         <h2>Attached Volumes</h2>
         <label for="volume-select">Volume</label>
@@ -1077,6 +1079,7 @@ INDEX_HTML = """<!DOCTYPE html>
       previewBox: document.getElementById("preview-box"),
       previewMeta: document.getElementById("preview-meta"),
       sudoBanner: document.getElementById("sudo-banner"),
+      encryptionBanner: document.getElementById("encryption-banner"),
       topMessage: document.getElementById("top-message"),
     };
 
@@ -1230,9 +1233,60 @@ INDEX_HTML = """<!DOCTYPE html>
       }
     }
 
+    function updateEncryptionBanner() {
+      const selected = els.volumeSelect.value;
+      const volume = volumeData.find(item => String(item.index) === selected);
+      if (!volume || !volume.encryption || volume.encryption.status === "none") {
+        els.encryptionBanner.hidden = true;
+        els.encryptionBanner.textContent = "";
+        return;
+      }
+
+      const enc = volume.encryption;
+      els.encryptionBanner.hidden = false;
+      let text = enc.summary || "Encrypted volume";
+      if (enc.workflow) {
+        text += `. ${enc.workflow}`;
+      }
+      els.encryptionBanner.textContent = text;
+    }
+
+    function updateScanModeOptions() {
+      const selected = els.volumeSelect.value;
+      const volume = volumeData.find(item => String(item.index) === selected);
+      const enc = volume && volume.encryption ? volume.encryption : null;
+      const deepRadio = document.querySelector('input[name="mode"][value="deep"]');
+      const hybridRadio = document.querySelector('input[name="mode"][value="hybrid"]');
+      const quickRadio = document.querySelector('input[name="mode"][value="quick"]');
+
+      if (enc && enc.is_locked) {
+        deepRadio.disabled = true;
+        hybridRadio.disabled = true;
+        quickRadio.disabled = true;
+        return;
+      }
+
+      deepRadio.disabled = Boolean(enc && enc.blocks_raw_carve);
+      if (deepRadio.disabled && deepRadio.checked) {
+        hybridRadio.checked = true;
+      }
+
+      if (enc && enc.is_encrypted && volume && !volume.mount_point) {
+        hybridRadio.disabled = true;
+        quickRadio.disabled = true;
+        if (hybridRadio.checked || quickRadio.checked) {
+          deepRadio.checked = false;
+        }
+      } else {
+        hybridRadio.disabled = false;
+        quickRadio.disabled = false;
+      }
+    }
+
     function updateScanControls() {
       els.startScan.disabled = scanning || !hasVolumeSelected();
       els.stopScan.disabled = !scanning;
+      updateScanModeOptions();
     }
 
     async function loadVolumes() {
@@ -1256,6 +1310,7 @@ INDEX_HTML = """<!DOCTYPE html>
       els.includeInternal.checked = data.include_internal;
       els.sudoBanner.hidden = !data.needs_sudo;
       updatePartitionSelect();
+      updateEncryptionBanner();
       updateScanControls();
     }
 
@@ -1539,6 +1594,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
     els.volumeSelect.addEventListener("change", () => {
       updatePartitionSelect();
+      updateEncryptionBanner();
       updateScanControls();
     });
 
@@ -1564,6 +1620,7 @@ INDEX_HTML = """<!DOCTYPE html>
         await loadVolumes();
         els.volumeSelect.value = "0";
         updatePartitionSelect();
+        updateEncryptionBanner();
         updateScanControls();
         document.querySelector('input[name="mode"][value="deep"]').checked = true;
         els.topMessage.textContent = "Disk image loaded. Select it and start a deep scan.";

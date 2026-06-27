@@ -6,6 +6,7 @@ import sys
 from recovery.gui import run_gui
 from recovery.models import ScanStatus
 from recovery.recover import recover_files
+from recovery.encryption import scan_mode_error
 from recovery.hybrid import HybridScanner
 from recovery.scanner import DeepScanner, quick_scan_mount
 from recovery.volumes import list_volumes, volume_for_partition, volume_from_image
@@ -124,6 +125,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.partition >= 0 and volume.partitions:
         part = volume.partitions[args.partition]
         print(f"Scanning partition {args.partition}: {part.display_label}")
+
+    if volume.encryption.is_encrypted:
+        print(f"Encryption: {volume.encryption.summary}")
+
+    scan_mode = "quick" if args.quick else "hybrid" if args.hybrid else "deep"
+    mode_error = scan_mode_error(volume, scan_mode)
+    if mode_error:
+        print(mode_error, file=sys.stderr)
+        return 1
 
     found: list = []
 

@@ -82,6 +82,21 @@ class HybridScanner:
                 self._complete_stopped(on_progress)
                 return
 
+            if self.volume.encryption.blocks_raw_carve:
+                carved_note = "raw carving skipped (encrypted volume)"
+                fs_note = (
+                    f"{self._filesystem_count} filesystem"
+                    if self._filesystem_count
+                    else "no filesystem files"
+                )
+                self.progress.status = ScanStatus.COMPLETE
+                self.progress.current_message = (
+                    f"Hybrid scan complete. Found {fs_note}; {carved_note}. "
+                    f"{self.volume.encryption.workflow}"
+                )
+                self._notify(on_progress)
+                return
+
             regions = unallocated_regions(self.volume)
             if regions is not None and not regions:
                 self.progress.status = ScanStatus.COMPLETE
