@@ -11,6 +11,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 from recovery.file_list import (
+    DEFAULT_MIN_CONFIDENCE,
     DEFAULT_PAGE_SIZE,
     LARGE_RESULT_THRESHOLD,
     filter_files,
@@ -282,7 +283,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         self._respond_json(payload)
 
     def _handle_files_get(self, query: dict[str, list[str]]) -> None:
-        filt, search, extension = _filter_params(query)
+        filt, search, extension, min_confidence = _filter_params(query)
         page = _query_int(query, "page", 0)
         page_size = _query_int(query, "page_size", DEFAULT_PAGE_SIZE)
 
@@ -292,6 +293,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 category=filt,
                 search=search,
                 extension=extension,
+                min_confidence=min_confidence,
                 page=page,
                 page_size=page_size,
             )
@@ -315,13 +317,14 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_files_summary(self, query: dict[str, list[str]]) -> None:
-        filt, search, extension = _filter_params(query)
+        filt, search, extension, min_confidence = _filter_params(query)
         with STATE.lock:
             summary = summarize_files(
                 STATE.found_files,
                 category=filt,
                 search=search,
                 extension=extension,
+                min_confidence=min_confidence,
             )
         self._respond_json(summary)
 
@@ -349,9 +352,16 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         filt = str(body.get("filter", "all"))
         search = str(body.get("search", ""))
         extension = str(body.get("extension", "all"))
+        min_confidence = str(body.get("min_confidence", DEFAULT_MIN_CONFIDENCE))
         selected = bool(body.get("selected", True))
         with STATE.lock:
-            for _index, found in filter_files(STATE.found_files, filt, search, extension):
+            for _index, found in filter_files(
+                STATE.found_files,
+                filt,
+                search,
+                extension,
+                min_confidence=min_confidence,
+            ):
                 found.selected = selected
         self._respond_json({"ok": True})
 
@@ -456,11 +466,14 @@ def _query_int(query: dict[str, list[str]], key: str, default: int) -> int:
         return default
 
 
-def _filter_params(query: dict[str, list[str]]) -> tuple[str, str, str]:
+def _filter_params(query: dict[str, list[str]]) -> tuple[str, str, str, str]:
     category = (query.get("filter") or ["all"])[0]
     search = (query.get("search") or [""])[0]
     extension = (query.get("extension") or ["all"])[0]
-    return category, search, extension
+    min_confidence = (query.get("min_confidence") or [DEFAULT_MIN_CONFIDENCE])[0]
+    if min_confidence not in ("high", "medium", "low"):
+        min_confidence = DEFAULT_MIN_CONFIDENCE
+    return category, search, extension, min_confidence
 
 
 def _recovery_dict(progress: RecoveryProgress) -> dict[str, Any]:
@@ -911,6 +924,12 @@ INDEX_HTML = """<!DOCTYPE html>
             <select id="extension-filter">
               <option value="all">All types</option>
             </select>
+            <label style="margin:0;">Confidence</label>
+            <select id="confidence-filter">
+              <option value="medium" selected>Medium+</option>
+              <option value="high">High only</option>
+              <option value="low">All</option>
+            </select>
             <button id="select-all">Select Filtered</button>
             <button id="select-none">Clear Filtered</button>
           </div>
@@ -981,6 +1000,7 @@ INDEX_HTML = """<!DOCTYPE html>
       largeSetNotice: document.getElementById("large-set-notice"),
       filter: document.getElementById("filter"),
       extensionFilter: document.getElementById("extension-filter"),
+      confidenceFilter: document.getElementById("confidence-filter"),
       fileSearch: document.getElementById("file-search"),
       pagePrev: document.getElementById("page-prev"),
       pageNext: document.getElementById("page-next"),
@@ -1160,6 +1180,7 @@ INDEX_HTML = """<!DOCTYPE html>
       const params = new URLSearchParams({
         filter: els.filter.value,
         extension: els.extensionFilter.value,
+        min_confidence: els.confidenceFilter.value,
         page: String(currentPage),
         page_size: els.pageSize.value,
       });
@@ -1185,21 +1206,27 @@ INDEX_HTML = """<!DOCTYPE html>
       const params = new URLSearchParams({
         filter: els.filter.value,
         extension: els.extensionFilter.value,
+        min_confidence: els.confidenceFilter.value,
       });
       const search = els.fileSearch.value.trim();
       if (search) params.set("search", search);
       const data = await api(`/api/files/summary?${params.toString()}`);
       updateExtensionOptions(data.extensions || []);
       const filteredTotal = Number(data.filtered_total) || 0;
+      const visibleTotal = Number(data.visible_total) || filteredTotal;
       const selectedAll = Number(data.selected_all) || 0;
       const total = Number(data.total) || 0;
       const selectedSize = data.selected_size_human || "0 B";
       const filteredSize = data.filtered_size_human || "0 B";
+      const hiddenCount = Math.max(0, total - visibleTotal);
       els.filesSummary.innerHTML =
         `<strong>${filteredTotal.toLocaleString()}</strong> matching · ` +
         `<strong>${selectedAll.toLocaleString()}</strong> selected · ` +
         `<strong>${selectedSize}</strong> to recover · ` +
-        `<strong>${total.toLocaleString()}</strong> total found`;
+        `<strong>${total.toLocaleString()}</strong> total found` +
+        (hiddenCount
+          ? ` · <strong>${hiddenCount.toLocaleString()}</strong> hidden by confidence filter`
+          : "");
       els.recoverySize.textContent =
         `Selected: ${selectedAll.toLocaleString()} file(s) · ${selectedSize}` +
         (filteredTotal !== total
@@ -1491,6 +1518,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
     els.filter.addEventListener("change", () => refreshFiles({ resetPage: true }));
     els.extensionFilter.addEventListener("change", () => refreshFiles({ resetPage: true }));
+    els.confidenceFilter.addEventListener("change", () => refreshFiles({ resetPage: true }));
 
     els.pageSize.addEventListener("change", () => refreshFiles({ resetPage: true }));
     els.pagePrev.addEventListener("click", () => {
@@ -1524,6 +1552,7 @@ INDEX_HTML = """<!DOCTYPE html>
         body: JSON.stringify({
           filter: els.filter.value,
           extension: els.extensionFilter.value,
+          min_confidence: els.confidenceFilter.value,
           search: els.fileSearch.value.trim(),
           selected: true,
         }),
@@ -1537,6 +1566,7 @@ INDEX_HTML = """<!DOCTYPE html>
         body: JSON.stringify({
           filter: els.filter.value,
           extension: els.extensionFilter.value,
+          min_confidence: els.confidenceFilter.value,
           search: els.fileSearch.value.trim(),
           selected: false,
         }),

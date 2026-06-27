@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from recovery.models import FoundFile, FileCategory, format_bytes
+from recovery.validation import meets_min_confidence
 
 DEFAULT_PAGE_SIZE = 100
+DEFAULT_MIN_CONFIDENCE = "medium"
 MAX_PAGE_SIZE = 500
 LARGE_RESULT_THRESHOLD = 5_000
 
@@ -18,6 +20,7 @@ def filter_files(
     category: str = "all",
     search: str = "",
     extension: str = "all",
+    min_confidence: str = DEFAULT_MIN_CONFIDENCE,
 ) -> list[tuple[int, FoundFile]]:
     term = search.strip().lower()
     ext_filter = normalize_extension(extension)
@@ -27,6 +30,8 @@ def filter_files(
         if category != "all" and found.category.value != category:
             continue
         if ext_filter and ext_filter != "all" and found.extension.lower() != ext_filter:
+            continue
+        if not meets_min_confidence(found.confidence, min_confidence):
             continue
         if term and not _matches_search(found, term):
             continue
@@ -39,9 +44,16 @@ def extension_counts(
     files: list[FoundFile],
     category: str = "all",
     search: str = "",
+    min_confidence: str = DEFAULT_MIN_CONFIDENCE,
 ) -> list[dict[str, Any]]:
     """Extension counts after category/search filters, before extension filter."""
-    matches = filter_files(files, category, search, extension="all")
+    matches = filter_files(
+        files,
+        category,
+        search,
+        extension="all",
+        min_confidence=min_confidence,
+    )
     counts: dict[str, int] = {}
     for _index, found in matches:
         ext = found.extension.lower()
@@ -57,18 +69,30 @@ def summarize_files(
     category: str = "all",
     search: str = "",
     extension: str = "all",
+    min_confidence: str = DEFAULT_MIN_CONFIDENCE,
 ) -> dict[str, Any]:
-    filtered = filter_files(files, category, search, extension)
+    filtered = filter_files(
+        files,
+        category,
+        search,
+        extension,
+        min_confidence=min_confidence,
+    )
+    visible = filter_files(files, category, search, extension="all", min_confidence=min_confidence)
     selected = sum(1 for _index, found in filtered if found.selected)
     selected_bytes = sum(found.size for found in files if found.selected)
     selected_filtered_bytes = sum(found.size for _index, found in filtered if found.selected)
     filtered_bytes = sum(found.size for _index, found in filtered)
     by_category: dict[str, int] = {cat.value: 0 for cat in FileCategory}
+    by_confidence: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
     for found in files:
         by_category[found.category.value] = by_category.get(found.category.value, 0) + 1
+        level = found.confidence if found.confidence in by_confidence else "medium"
+        by_confidence[level] = by_confidence.get(level, 0) + 1
 
     return {
         "total": len(files),
+        "visible_total": len(visible),
         "filtered_total": len(filtered),
         "selected": selected,
         "selected_all": sum(1 for found in files if found.selected),
@@ -79,7 +103,8 @@ def summarize_files(
         "filtered_bytes": filtered_bytes,
         "filtered_size_human": format_bytes(filtered_bytes),
         "by_category": by_category,
-        "extensions": extension_counts(files, category, search),
+        "by_confidence": by_confidence,
+        "extensions": extension_counts(files, category, search, min_confidence),
         "large_result_set": len(files) >= LARGE_RESULT_THRESHOLD,
     }
 
@@ -90,11 +115,18 @@ def paginate_files(
     category: str = "all",
     search: str = "",
     extension: str = "all",
+    min_confidence: str = DEFAULT_MIN_CONFIDENCE,
     page: int = 0,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> dict[str, Any]:
     page_size = max(1, min(page_size, MAX_PAGE_SIZE))
-    filtered = filter_files(files, category, search, extension)
+    filtered = filter_files(
+        files,
+        category,
+        search,
+        extension,
+        min_confidence=min_confidence,
+    )
     total = len(filtered)
     total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
     page = max(0, min(page, total_pages - 1 if total else 0))

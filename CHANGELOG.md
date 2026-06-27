@@ -7,8 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- License changed from MIT to PolyForm Noncommercial License 1.0.0.
+### Added
+- Carved-file validation pipeline with confidence scoring during deep scans.
+- Confidence filter in the file list UI (default hides low-confidence hits).
 
 ## [0.1.0] - 2026-06-27
 

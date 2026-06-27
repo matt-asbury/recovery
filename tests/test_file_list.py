@@ -24,6 +24,16 @@ def test_filter_files_by_category() -> None:
     assert matches[0][1].extension == "jpg"
 
 
+def test_filter_files_by_confidence() -> None:
+    files = [
+        FoundFile(0, 100, "jpg", FileCategory.IMAGE, "JPEG", "/dev/rdisk1", confidence="high"),
+        FoundFile(1, 100, "jpg", FileCategory.IMAGE, "JPEG", "/dev/rdisk1", confidence="low"),
+    ]
+    matches = filter_files(files, min_confidence="medium")
+    assert len(matches) == 1
+    assert matches[0][1].confidence == "high"
+
+
 def test_summarize_selected_counts() -> None:
     files = [_file(0, selected=True), _file(1), _file(2, selected=True)]
     summary = summarize_files(files)
