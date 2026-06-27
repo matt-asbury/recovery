@@ -6,8 +6,9 @@ import subprocess
 from dataclasses import replace
 from typing import Optional
 
-from recovery.models import PartitionInfo, VolumeInfo
+from recovery.models import VolumeInfo
 from recovery.partitions import parse_partitions
+from recovery.encryption import enrich_volume_encryption, load_apfs_volume_index
 
 
 def volume_from_image(image_path: str) -> VolumeInfo:
@@ -33,7 +34,7 @@ def volume_from_image(image_path: str) -> VolumeInfo:
         is_disk_image=True,
         image_path=path,
     )
-    return enrich_volume_partitions(volume)
+    return enrich_volume_encryption(enrich_volume_partitions(volume))
 
 
 def enrich_volume_partitions(volume: VolumeInfo) -> VolumeInfo:
@@ -84,9 +85,10 @@ def list_volumes(include_internal: bool = True) -> list[VolumeInfo]:
     plist = plistlib.loads(output)
     volumes: list[VolumeInfo] = []
     seen: set[str] = set()
+    apfs_index = load_apfs_volume_index()
 
     for entry in plist.get("AllDisksAndPartitions", []):
-        _collect_volumes(entry, plist, volumes, seen, include_internal)
+        _collect_volumes(entry, plist, volumes, seen, include_internal, apfs_index=apfs_index)
 
     volumes.sort(key=lambda v: (v.is_internal, v.name.lower()))
     return volumes
@@ -99,9 +101,10 @@ def _collect_volumes(
     seen: set[str],
     include_internal: bool,
     *,
+    apfs_index: dict,
     parent_internal: Optional[bool] = None,
 ) -> None:
-    info = _entry_to_volume(entry, parent_internal=parent_internal)
+    info = _entry_to_volume(entry, parent_internal=parent_internal, apfs_index=apfs_index)
     if info and _should_include(info, include_internal) and info.device_id not in seen:
         seen.add(info.device_id)
         volumes.append(info)
@@ -115,6 +118,7 @@ def _collect_volumes(
                 volumes,
                 seen,
                 include_internal,
+                apfs_index=apfs_index,
                 parent_internal=parent_internal,
             )
 
@@ -128,6 +132,7 @@ def _should_include(info: VolumeInfo, include_internal: bool) -> bool:
 def _entry_to_volume(
     entry: dict,
     *,
+    apfs_index: dict,
     parent_internal: Optional[bool] = None,
 ) -> Optional[VolumeInfo]:
     device_id = entry.get("DeviceIdentifier")
@@ -150,10 +155,11 @@ def _entry_to_volume(
             is_internal=_is_internal(entry, parent_internal),
             whole_disk=True,
         )
-        return enrich_volume_partitions(volume)
+        volume = enrich_volume_partitions(volume)
+        return enrich_volume_encryption(volume, apfs_index=apfs_index)
 
     if content == "Apple_APFS_Container":
-        return VolumeInfo(
+        volume = VolumeInfo(
             device_id=f"/dev/{device_id}",
             name=str(entry.get("VolumeName") or "APFS Container"),
             size_bytes=size,
@@ -163,6 +169,7 @@ def _entry_to_volume(
             is_internal=_is_internal(entry, parent_internal),
             whole_disk=True,
         )
+        return enrich_volume_encryption(volume, apfs_index=apfs_index)
 
     skip_contents = {
         "EFI",
@@ -179,7 +186,7 @@ def _entry_to_volume(
         or device_id
     )
 
-    return VolumeInfo(
+    volume = VolumeInfo(
         device_id=f"/dev/{device_id}",
         name=str(name),
         size_bytes=size,
@@ -189,6 +196,7 @@ def _entry_to_volume(
         is_internal=_is_internal(entry, parent_internal),
         whole_disk=False,
     )
+    return enrich_volume_encryption(volume, apfs_index=apfs_index)
 
 
 def _is_internal(entry: dict, parent_internal: Optional[bool]) -> bool:

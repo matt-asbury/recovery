@@ -31,6 +31,48 @@ class FileCategory(str, Enum):
 
 
 @dataclass(frozen=True)
+class EncryptionInfo:
+    """Encryption state for a volume or partition."""
+
+    status: str = "unknown"
+    method: str = ""
+    summary: str = ""
+    workflow: str = ""
+
+    @property
+    def is_encrypted(self) -> bool:
+        return self.status in {"locked", "unlocked"}
+
+    @property
+    def is_locked(self) -> bool:
+        return self.status == "locked"
+
+    @property
+    def blocks_raw_carve(self) -> bool:
+        return self.is_encrypted
+
+    @property
+    def allows_filesystem_scan(self) -> bool:
+        return self.status != "locked"
+
+    @classmethod
+    def none(cls) -> EncryptionInfo:
+        return cls(status="none")
+
+    @classmethod
+    def unknown(cls) -> EncryptionInfo:
+        return cls(
+            status="unknown",
+            summary="Encryption status unknown",
+            workflow=(
+                "If this media came from an encrypted Mac volume, unlock and mount it first, "
+                "then use Quick or Hybrid scan. Raw carving of encrypted bytes will not "
+                "recover readable files."
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class PartitionInfo:
     index: int
     start_byte: int
@@ -65,6 +107,7 @@ class VolumeInfo:
     partitions: Tuple[PartitionInfo, ...] = ()
     scan_start_byte: int = 0
     scan_size_bytes: Optional[int] = None
+    encryption: EncryptionInfo = field(default_factory=EncryptionInfo.none)
 
     @property
     def scan_end_byte(self) -> int:
@@ -89,7 +132,10 @@ class VolumeInfo:
             mount = f" @ {self.mount_point}" if self.mount_point else " (unmounted)"
             base = f"{self.name} — {size_gb:.1f} GB{mount} [{self.device_id}]"
         if self.is_partition_scan:
-            return f"{base} (partition @ 0x{self.scan_start_byte:x})"
+            base = f"{base} (partition @ 0x{self.scan_start_byte:x})"
+        if self.encryption.is_encrypted:
+            tag = self.encryption.summary or "Encrypted"
+            base = f"{base} [{tag}]"
         return base
 
     @property
