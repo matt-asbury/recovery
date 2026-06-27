@@ -72,6 +72,7 @@ Guidelines:
 
 | Path | Purpose |
 |------|---------|
+| `recovery/partitions.py` | GPT/MBR/APM partition table parsing |
 | `recovery/scanner.py` | Deep and quick scan engines |
 | `recovery/signatures.py` | File type detection |
 | `recovery/webui.py` | Browser UI and HTTP API |

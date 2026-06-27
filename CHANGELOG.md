@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLite-backed results store for scalable scan result persistence.
 - `recovery.security` module for path validation and localhost-only HTTP access.
 - Test pyramid: unit vs integration markers, coverage in CI, security and recovery tests.
+- Partition table parsing (GPT, MBR, Apple Partition Map) for disk images and whole disks.
+- Partition-scoped deep scans in the UI, CLI (`--partition`), and scanner.
 
 ### Changed
 - Recovery export validates destination paths and rejects traversal in filenames.
