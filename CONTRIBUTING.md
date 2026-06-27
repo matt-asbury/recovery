@@ -31,10 +31,34 @@ Deep scans of raw devices require `sudo`. Disk image scans do not.
 ### Run tests
 
 ```bash
+# Fast unit tests (default in CI, with coverage)
+pytest -m unit --cov=recovery
+
+# Slower integration tests (HTTP API, scanner on disk images)
+pytest -m integration
+
+# Everything
 pytest
 ```
 
 Most tests are unit tests and do not require root access or attached disks.
+
+## Test pyramid
+
+We follow a classic test pyramid: many fast unit tests at the base, fewer integration tests above, and no automated end-to-end UI tests yet.
+
+| Layer | Location | Marker | What it covers |
+| ----- | -------- | ------ | -------------- |
+| Unit | `tests/test_*.py` (except `tests/integration/`) | `unit` | Pure logic: models, validation, security helpers, results store, preview parsing |
+| Integration | `tests/integration/` | `integration` | HTTP handler smoke tests, scanner against synthetic disk images |
+| Manual | — | — | Real device scans, browser UI, `sudo ./recovery.sh` |
+
+Guidelines:
+
+- Put new behavior in **unit tests first** when the code under test has no I/O.
+- Add an **integration test** when wiring crosses modules (e.g. scanner → validation → results).
+- Keep integration tests **deterministic** — use temp files and synthetic images, not attached disks.
+- CI runs unit tests on Python 3.10 and 3.12, then integration tests and a full-suite coverage gate (`--cov-fail-under=40`) on 3.12.
 
 ## Making changes
 
@@ -53,7 +77,8 @@ Most tests are unit tests and do not require root access or attached disks.
 | `recovery/webui.py` | Browser UI and HTTP API |
 | `recovery/recover.py` | Export/carve recovered files |
 | `recovery/preview.py` | Image preview generation |
-| `tests/` | Unit tests |
+| `recovery/security.py` | Path validation and localhost checks |
+| `tests/` | Unit and integration tests |
 
 ## Coding guidelines
 

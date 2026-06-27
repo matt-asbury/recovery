@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Carved-file validation pipeline with confidence scoring during deep scans.
 - Confidence filter in the file list UI (default hides low-confidence hits).
 - SQLite-backed results store for scalable scan result persistence.
+- `recovery.security` module for path validation and localhost-only HTTP access.
+- Test pyramid: unit vs integration markers, coverage in CI, security and recovery tests.
+
+### Changed
+- Recovery export validates destination paths and rejects traversal in filenames.
+- HTTP API rejects non-local clients and oversized JSON bodies.
 
 ## [0.1.0] - 2026-06-27
 
