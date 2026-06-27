@@ -10,14 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
-from recovery.file_list import (
-    DEFAULT_MIN_CONFIDENCE,
-    DEFAULT_PAGE_SIZE,
-    LARGE_RESULT_THRESHOLD,
-    filter_files,
-    paginate_files,
-    summarize_files,
-)
+from recovery.file_list import DEFAULT_MIN_CONFIDENCE, DEFAULT_PAGE_SIZE, LARGE_RESULT_THRESHOLD
 from recovery.models import (
     FoundFile,
     RecoveryProgress,
@@ -28,6 +21,7 @@ from recovery.models import (
 )
 from recovery.preview import can_preview, preview_description, render_preview
 from recovery.recover import RecoveryResult, recover_files
+from recovery.results_store import ResultsStore
 from recovery.scanner import DeepScanner, quick_scan_mount
 from recovery.volumes import list_volumes, volume_from_image
 
@@ -39,7 +33,7 @@ class AppState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.volumes: list[VolumeInfo] = []
-        self.found_files: list[FoundFile] = []
+        self.results = ResultsStore()
         self.scanner: Optional[DeepScanner] = None
         self.progress = ScanProgress()
         self.scanning = False
@@ -78,9 +72,9 @@ class AppState:
 
     def file_detail(self, index: int) -> Optional[dict[str, Any]]:
         with self.lock:
-            if index < 0 or index >= len(self.found_files):
+            found = self.results.get(index)
+            if found is None:
                 return None
-            found = self.found_files[index]
             payload = self.file_to_dict(found, index)
             payload["description"] = preview_description(found)
             return payload
@@ -245,7 +239,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 )
                 return
             with STATE.lock:
-                STATE.found_files.clear()
+                STATE.results.clear()
                 STATE.scanning = True
                 STATE.progress = ScanProgress(status=ScanStatus.SCANNING)
             threading.Thread(
@@ -257,7 +251,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
             return
 
         with STATE.lock:
-            STATE.found_files.clear()
+            STATE.results.clear()
             STATE.scanning = True
             STATE.progress = ScanProgress(status=ScanStatus.SCANNING)
             STATE.scanner = DeepScanner(volume, categories=category_set)
@@ -288,8 +282,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         page_size = _query_int(query, "page_size", DEFAULT_PAGE_SIZE)
 
         with STATE.lock:
-            page_data = paginate_files(
-                STATE.found_files,
+            page_data = STATE.results.paginate(
                 category=filt,
                 search=search,
                 extension=extension,
@@ -301,7 +294,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 STATE.file_to_dict(found, index)
                 for index, found in page_data["files"]
             ]
-            large_result_set = len(STATE.found_files) >= LARGE_RESULT_THRESHOLD
+            large_result_set = STATE.results.count() >= LARGE_RESULT_THRESHOLD
 
         self._respond_json(
             {
@@ -319,8 +312,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
     def _handle_files_summary(self, query: dict[str, list[str]]) -> None:
         filt, search, extension, min_confidence = _filter_params(query)
         with STATE.lock:
-            summary = summarize_files(
-                STATE.found_files,
+            summary = STATE.results.summarize(
                 category=filt,
                 search=search,
                 extension=extension,
@@ -344,8 +336,9 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                     index = int(raw)
                 except (TypeError, ValueError):
                     continue
-                if 0 <= index < len(STATE.found_files):
-                    STATE.found_files[index].selected = selected
+                found = STATE.results.get(index)
+                if found is not None:
+                    STATE.results.set_selected([index], selected)
         self._respond_json({"ok": True})
 
     def _handle_select_all(self, body: dict[str, Any]) -> None:
@@ -355,14 +348,13 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         min_confidence = str(body.get("min_confidence", DEFAULT_MIN_CONFIDENCE))
         selected = bool(body.get("selected", True))
         with STATE.lock:
-            for _index, found in filter_files(
-                STATE.found_files,
-                filt,
-                search,
-                extension,
+            STATE.results.set_selected_matching(
+                category=filt,
+                search=search,
+                extension=extension,
                 min_confidence=min_confidence,
-            ):
-                found.selected = selected
+                selected=selected,
+            )
         self._respond_json({"ok": True})
 
     def _handle_choose_recovery_dir(self, body: dict[str, Any]) -> None:
@@ -383,7 +375,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 self._respond_json({"error": "Recovery already in progress"}, status=409)
                 return
             STATE.recovery_dir = destination
-            files = [found for found in STATE.found_files if found.selected]
+            files = STATE.results.selected_files()
 
         if not destination:
             self._respond_json({"error": "Choose a destination folder"}, status=400)
@@ -421,10 +413,10 @@ class RecoveryHandler(BaseHTTPRequestHandler):
             return
 
         with STATE.lock:
-            if index < 0 or index >= len(STATE.found_files):
+            found = STATE.results.get(index)
+            if found is None:
                 self._respond_json({"error": "File not found"}, status=404)
                 return
-            found = STATE.found_files[index]
 
         preview, detail = render_preview(found)
         if preview is None or not preview.data:
@@ -509,8 +501,8 @@ def _progress_dict(progress: ScanProgress) -> dict[str, Any]:
 
 def _on_file_found(found: FoundFile) -> None:
     with STATE.lock:
-        STATE.found_files.append(found)
-        if len(STATE.found_files) == LARGE_RESULT_THRESHOLD:
+        STATE.results.add(found)
+        if STATE.results.count() == LARGE_RESULT_THRESHOLD:
             STATE.progress.current_message = (
                 f"Large result set ({LARGE_RESULT_THRESHOLD:,}+ files). "
                 "The UI uses pagination to stay responsive."
@@ -530,12 +522,12 @@ def _run_quick_scan(volume: VolumeInfo, categories: Optional[set[str]]) -> None:
         if categories:
             files = [item for item in files if item.category.value in categories]
         with STATE.lock:
-            STATE.found_files.extend(files)
+            STATE.results.extend(files)
             STATE.progress = ScanProgress(
                 status=ScanStatus.COMPLETE,
                 bytes_scanned=1,
                 total_bytes=1,
-                files_found=len(STATE.found_files),
+                files_found=STATE.results.count(),
                 current_message=f"Quick scan complete. Found {len(files)} file(s).",
             )
             STATE.scanning = False
