@@ -30,7 +30,8 @@ from recovery.security import (
     validate_readable_file_path,
     validate_recovery_destination,
 )
-from recovery.volumes import list_volumes, volume_from_image
+from recovery.partitions import partition_to_dict
+from recovery.volumes import list_volumes, volume_for_partition, volume_from_image
 
 DEFAULT_PORT = 8765
 DEFAULT_DEST = os.path.expanduser("~/RecoveredFiles")
@@ -199,6 +200,10 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                     "display_name": volume.display_name,
                     "is_disk_image": volume.is_disk_image,
                     "mount_point": volume.mount_point,
+                    "partitions": [
+                        partition_to_dict(partition)
+                        for partition in volume.partitions
+                    ],
                 }
                 for index, volume in enumerate(STATE.volumes)
             ]
@@ -231,7 +236,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         except (FileNotFoundError, ValueError, OSError) as exc:
             self._respond_json({"error": str(exc)}, status=400)
             return
-        self._respond_json({"ok": True, "display_name": volume.display_name})
+        self._respond_json({"ok": True, "display_name": volume.display_name, "partitions": len(volume.partitions)})
 
     def _handle_scan_start(self, body: dict[str, Any]) -> None:
         with STATE.lock:
@@ -241,15 +246,22 @@ class RecoveryHandler(BaseHTTPRequestHandler):
 
         try:
             volume_index = int(body.get("volume_index", -1))
+            partition_index = int(body.get("partition_index", -1))
         except (TypeError, ValueError):
-            self._respond_json({"error": "Invalid volume index"}, status=400)
+            self._respond_json({"error": "Invalid volume or partition index"}, status=400)
             return
 
         with STATE.lock:
             if volume_index < 0 or volume_index >= len(STATE.volumes):
                 self._respond_json({"error": "Select a volume first"}, status=400)
                 return
-            volume = STATE.volumes[volume_index]
+            base_volume = STATE.volumes[volume_index]
+
+        try:
+            volume = volume_for_partition(base_volume, partition_index)
+        except ValueError as exc:
+            self._respond_json({"error": str(exc)}, status=400)
+            return
 
         mode = str(body.get("mode", "deep"))
         categories = body.get("categories") or []
@@ -886,6 +898,10 @@ INDEX_HTML = """<!DOCTYPE html>
         <h2>Attached Volumes</h2>
         <label for="volume-select">Volume</label>
         <select id="volume-select" size="8"></select>
+        <label for="partition-select" style="margin-top:12px;">Scan region</label>
+        <select id="partition-select" disabled>
+          <option value="-1">Whole disk</option>
+        </select>
         <div class="row">
           <button id="refresh-volumes">Refresh</button>
           <label style="display:flex;align-items:center;gap:6px;margin:0;">
@@ -1011,6 +1027,7 @@ INDEX_HTML = """<!DOCTYPE html>
   <script>
     const els = {
       volumeSelect: document.getElementById("volume-select"),
+      partitionSelect: document.getElementById("partition-select"),
       includeInternal: document.getElementById("include-internal"),
       imagePath: document.getElementById("image-path"),
       loadImage: document.getElementById("load-image"),
@@ -1050,6 +1067,7 @@ INDEX_HTML = """<!DOCTYPE html>
     };
 
     let scanning = false;
+    let volumeData = [];
     let previewIndex = null;
     let previewObjectUrl = null;
     let previewRequestId = 0;
@@ -1174,6 +1192,30 @@ INDEX_HTML = """<!DOCTYPE html>
       return els.volumeSelect.value !== "";
     }
 
+    function updatePartitionSelect() {
+      const selected = els.volumeSelect.value;
+      els.partitionSelect.innerHTML = "";
+      const whole = document.createElement("option");
+      whole.value = "-1";
+      whole.textContent = "Whole disk";
+      els.partitionSelect.appendChild(whole);
+
+      const volume = volumeData.find(item => String(item.index) === selected);
+      if (!volume || !volume.partitions || volume.partitions.length === 0) {
+        els.partitionSelect.disabled = true;
+        els.partitionSelect.value = "-1";
+        return;
+      }
+
+      els.partitionSelect.disabled = false;
+      for (const partition of volume.partitions) {
+        const option = document.createElement("option");
+        option.value = partition.index;
+        option.textContent = partition.display_label;
+        els.partitionSelect.appendChild(option);
+      }
+    }
+
     function updateScanControls() {
       els.startScan.disabled = scanning || !hasVolumeSelected();
       els.stopScan.disabled = !scanning;
@@ -1181,6 +1223,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
     async function loadVolumes() {
       const data = await api("/api/volumes");
+      volumeData = data.volumes || [];
       const previous = els.volumeSelect.value;
       els.volumeSelect.innerHTML = "";
       const placeholder = document.createElement("option");
@@ -1198,6 +1241,7 @@ INDEX_HTML = """<!DOCTYPE html>
       els.recoveryDir.value = data.recovery_dir;
       els.includeInternal.checked = data.include_internal;
       els.sudoBanner.hidden = !data.needs_sudo;
+      updatePartitionSelect();
       updateScanControls();
     }
 
@@ -1479,7 +1523,10 @@ INDEX_HTML = """<!DOCTYPE html>
 
     els.includeInternal.addEventListener("change", () => els.refreshVolumes.click());
 
-    els.volumeSelect.addEventListener("change", updateScanControls);
+    els.volumeSelect.addEventListener("change", () => {
+      updatePartitionSelect();
+      updateScanControls();
+    });
 
     els.chooseRecoveryDir.addEventListener("click", async () => {
       try {
@@ -1502,6 +1549,7 @@ INDEX_HTML = """<!DOCTYPE html>
         });
         await loadVolumes();
         els.volumeSelect.value = "0";
+        updatePartitionSelect();
         updateScanControls();
         document.querySelector('input[name="mode"][value="deep"]').checked = true;
         els.topMessage.textContent = "Disk image loaded. Select it and start a deep scan.";
@@ -1524,6 +1572,7 @@ INDEX_HTML = """<!DOCTYPE html>
           method: "POST",
           body: JSON.stringify({
             volume_index: Number(els.volumeSelect.value),
+            partition_index: Number(els.partitionSelect.value),
             mode: scanMode(),
             categories: selectedCategories(),
           }),

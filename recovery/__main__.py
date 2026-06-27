@@ -7,7 +7,7 @@ from recovery.gui import run_gui
 from recovery.models import ScanStatus
 from recovery.recover import recover_files
 from recovery.scanner import DeepScanner, quick_scan_mount
-from recovery.volumes import list_volumes, volume_from_image
+from recovery.volumes import list_volumes, volume_for_partition, volume_from_image
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,6 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-internal",
         action="store_true",
         help="Include internal/system disks when listing or selecting",
+    )
+    parser.add_argument(
+        "--partition",
+        type=int,
+        default=-1,
+        metavar="N",
+        help="Partition index to scan (default: whole disk/image)",
     )
     parser.add_argument(
         "--no-gui",
@@ -84,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         for vol in list_volumes(include_internal=args.include_internal):
             print(vol.display_name)
+            for partition in vol.partitions:
+                print(f"  [{partition.index}] {partition.display_label}")
         return 0
 
     if args.device and args.image:
@@ -96,6 +105,16 @@ def main(argv: list[str] | None = None) -> int:
     volume = resolve_scan_target(args)
     if volume is None:
         parser.error("--device or --image is required for CLI mode")
+
+    try:
+        volume = volume_for_partition(volume, args.partition)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.partition >= 0 and volume.partitions:
+        part = volume.partitions[args.partition]
+        print(f"Scanning partition {args.partition}: {part.display_label}")
 
     if args.quick:
         if volume.is_disk_image:
