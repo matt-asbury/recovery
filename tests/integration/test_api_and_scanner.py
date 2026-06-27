@@ -24,6 +24,22 @@ def _get_json(url: str) -> tuple[int, dict]:
         return response.status, json.loads(response.read().decode("utf-8"))
 
 
+def test_index_and_static_assets() -> None:
+    server, base = _start_server()
+    try:
+        with urllib.request.urlopen(f"{base}/", timeout=5) as response:
+            html = response.read().decode("utf-8")
+            assert response.status == 200
+            assert "Recovery" in html
+            assert "/static/app.css" in html
+        with urllib.request.urlopen(f"{base}/static/app.css", timeout=5) as response:
+            css = response.read().decode("utf-8")
+            assert response.status == 200
+            assert ".app-header" in css
+    finally:
+        server.shutdown()
+
+
 def test_volumes_endpoint_returns_json() -> None:
     server, base = _start_server()
     try:

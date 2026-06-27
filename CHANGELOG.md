@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hybrid scan mode: filesystem walk plus carving of FAT32 unallocated space.
 - Original filenames for filesystem-discovered files during hybrid/quick scans.
 - Encryption detection for live volumes (FileVault/APFS) with scan-mode guidance.
+- Redesigned web UI with workflow steps, volume cards, toasts, and static assets.
 
 ### Changed
 - Quick scan now tags results as `filesystem` and shows basename filenames.
