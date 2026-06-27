@@ -5,7 +5,9 @@ import math
 import os
 import subprocess
 import threading
+import time
 import webbrowser
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
@@ -19,6 +21,7 @@ from recovery.models import (
     ScanProgress,
     ScanStatus,
     VolumeInfo,
+    format_bytes,
 )
 from recovery.preview import can_preview, preview_description, render_preview
 from recovery.recover import RecoveryResult, recover_files
@@ -53,6 +56,9 @@ def _load_index_html() -> str:
 INDEX_HTML = _load_index_html()
 
 
+MAX_SCAN_LOG_ENTRIES = 200
+
+
 class AppState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -64,6 +70,48 @@ class AppState:
         self.recovery = RecoveryProgress()
         self.recovery_dir = DEFAULT_DEST
         self.include_internal = False
+        self.scan_log: deque[dict[str, Any]] = deque(maxlen=MAX_SCAN_LOG_ENTRIES)
+        self.scan_context: dict[str, Any] = {}
+        self._last_log_message = ""
+
+    def begin_scan_session(
+        self,
+        *,
+        mode: str,
+        volume_name: str,
+        categories: Optional[set[str]],
+    ) -> None:
+        self.scan_log.clear()
+        self._last_log_message = ""
+        category_text = ", ".join(sorted(categories)) if categories else "all categories"
+        self.scan_context = {
+            "mode": mode,
+            "volume_name": volume_name,
+            "categories": category_text,
+        }
+        self.append_scan_log(
+            f"Starting {mode} scan on {volume_name} ({category_text})",
+            level="info",
+        )
+
+    def append_scan_log(self, message: str, *, level: str = "info", dedupe: bool = False) -> None:
+        message = message.strip()
+        if not message:
+            return
+        if dedupe and message == self._last_log_message:
+            return
+        self.scan_log.append(
+            {
+                "time": time.time(),
+                "message": message,
+                "level": level,
+            }
+        )
+        if dedupe:
+            self._last_log_message = message
+
+    def scan_log_snapshot(self) -> list[dict[str, Any]]:
+        return list(self.scan_log)
 
     def refresh_volumes(self) -> None:
         with self.lock:
@@ -301,6 +349,11 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 STATE.results.clear()
                 STATE.scanning = True
                 STATE.progress = ScanProgress(status=ScanStatus.SCANNING)
+                STATE.begin_scan_session(
+                    mode=mode,
+                    volume_name=volume.display_name,
+                    categories=category_set,
+                )
             threading.Thread(
                 target=_run_quick_scan,
                 args=(volume, category_set),
@@ -314,6 +367,11 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 STATE.results.clear()
                 STATE.scanning = True
                 STATE.progress = ScanProgress(status=ScanStatus.SCANNING)
+                STATE.begin_scan_session(
+                    mode=mode,
+                    volume_name=volume.display_name,
+                    categories=category_set,
+                )
                 STATE.scanner = HybridScanner(volume, categories=category_set)
 
             scanner = STATE.scanner
@@ -326,6 +384,11 @@ class RecoveryHandler(BaseHTTPRequestHandler):
             STATE.results.clear()
             STATE.scanning = True
             STATE.progress = ScanProgress(status=ScanStatus.SCANNING)
+            STATE.begin_scan_session(
+                mode=mode,
+                volume_name=volume.display_name,
+                categories=category_set,
+            )
             STATE.scanner = DeepScanner(volume, categories=category_set)
 
         scanner = STATE.scanner
@@ -337,6 +400,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         with STATE.lock:
             if STATE.scanner:
                 STATE.scanner.stop()
+                STATE.append_scan_log("Stop requested — winding down scan", level="warn")
         self._respond_json({"ok": True})
 
     def _handle_scan_status(self) -> None:
@@ -345,6 +409,8 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 "scanning": STATE.scanning,
                 "progress": _progress_dict(STATE.progress),
                 "recovery": _recovery_dict(STATE.recovery),
+                "log": STATE.scan_log_snapshot(),
+                "scan_context": STATE.scan_context,
             }
         self._respond_json(payload)
 
@@ -588,6 +654,11 @@ def _progress_dict(progress: ScanProgress) -> dict[str, Any]:
     summary = progress.progress_summary if progress.status == ScanStatus.SCANNING else f"{percent:.1f}%"
     if "nan" in summary.lower():
         summary = f"{percent:.1f}%"
+    rate = progress.bytes_per_second
+    if rate > 0 and math.isfinite(rate):
+        transfer_rate_human = f"{format_bytes(int(rate))}/s"
+    else:
+        transfer_rate_human = "—"
     return {
         "status": progress.status.value,
         "percent": percent,
@@ -595,42 +666,72 @@ def _progress_dict(progress: ScanProgress) -> dict[str, Any]:
         "message": progress.current_message,
         "files_found": progress.files_found,
         "error": progress.error,
+        "bytes_scanned": progress.bytes_scanned,
+        "total_bytes": progress.total_bytes,
+        "bytes_scanned_human": format_bytes(progress.bytes_scanned),
+        "total_bytes_human": format_bytes(progress.total_bytes),
+        "bytes_per_second": rate,
+        "transfer_rate_human": transfer_rate_human,
+        "elapsed_seconds": progress.elapsed_seconds,
+        "elapsed_human": progress.elapsed_human,
+        "eta_seconds": progress.eta_seconds,
+        "eta_human": progress.eta_human,
     }
 
 
 def _on_file_found(found: FoundFile) -> None:
     with STATE.lock:
         STATE.results.add(found)
-        if STATE.results.count() == LARGE_RESULT_THRESHOLD:
+        count = STATE.results.count()
+        if count == 1:
+            STATE.append_scan_log("First recoverable file detected")
+        elif count % 250 == 0:
+            STATE.append_scan_log(f"Found {count:,} file(s) so far")
+        if count == LARGE_RESULT_THRESHOLD:
             STATE.progress.current_message = (
                 f"Large result set ({LARGE_RESULT_THRESHOLD:,}+ files). "
                 "The UI uses pagination to stay responsive."
             )
+            STATE.append_scan_log(STATE.progress.current_message, level="warn")
 
 
 def _on_progress(progress: ScanProgress) -> None:
     with STATE.lock:
         STATE.progress = progress
+        if progress.current_message:
+            STATE.append_scan_log(progress.current_message, dedupe=True)
+        if progress.status == ScanStatus.ERROR and progress.error:
+            STATE.append_scan_log(progress.error, level="error")
+        if progress.status == ScanStatus.COMPLETE:
+            STATE.append_scan_log(
+                progress.current_message or "Scan complete",
+                level="info",
+            )
         if progress.status in (ScanStatus.COMPLETE, ScanStatus.ERROR):
             STATE.scanning = False
 
 
 def _run_quick_scan(volume: VolumeInfo, categories: Optional[set[str]]) -> None:
     try:
+        with STATE.lock:
+            STATE.append_scan_log(f"Walking mounted volume at {volume.mount_point or '?'}")
         files = quick_scan_mount(volume.mount_point or "", categories=categories)
         with STATE.lock:
             STATE.results.extend(files)
+            message = f"Quick scan complete. Found {len(files)} file(s)."
             STATE.progress = ScanProgress(
                 status=ScanStatus.COMPLETE,
                 bytes_scanned=1,
                 total_bytes=1,
                 files_found=STATE.results.count(),
-                current_message=f"Quick scan complete. Found {len(files)} file(s).",
+                current_message=message,
             )
+            STATE.append_scan_log(message)
             STATE.scanning = False
     except OSError as exc:
         with STATE.lock:
             STATE.progress = ScanProgress(status=ScanStatus.ERROR, error=str(exc))
+            STATE.append_scan_log(str(exc), level="error")
             STATE.scanning = False
 
 

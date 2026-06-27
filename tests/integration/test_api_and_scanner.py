@@ -58,6 +58,10 @@ def test_scan_status_endpoint() -> None:
         assert status == 200
         assert "scanning" in payload
         assert "recovery" in payload
+        assert "log" in payload
+        assert isinstance(payload["log"], list)
+        assert "bytes_scanned_human" in payload["progress"]
+        assert "transfer_rate_human" in payload["progress"]
     finally:
         server.shutdown()
 
