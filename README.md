@@ -129,7 +129,7 @@ This is a **basic** recovery tool, not a replacement for professional software (
 - Carved files may be truncated or corrupted if boundaries cannot be determined
 - Duplicate and false-positive matches are possible
 - Very large disks can take a long time to scan
-- Encrypted volumes (FileVault, APFS encrypted) cannot be carved meaningfully without keys
+- Encrypted volumes (FileVault, APFS encrypted) cannot be carved meaningfully without keys — see [ENCRYPTION.md](ENCRYPTION.md) for the supported workflow
 
 ## Safety
 
@@ -144,6 +144,10 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 ## Security
 
 See [SECURITY.md](SECURITY.md) for how to report vulnerabilities.
+
+## Encrypted volumes
+
+See [ENCRYPTION.md](ENCRYPTION.md) for FileVault/APFS detection, scan-mode rules, and the recommended unlock-and-mount workflow.
 
 ## Changelog
 

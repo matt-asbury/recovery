@@ -72,6 +72,7 @@ Guidelines:
 
 | Path | Purpose |
 |------|---------|
+| `recovery/encryption.py` | FileVault/APFS encryption detection and scan validation |
 | `recovery/filesystem.py` | Mounted volume walks and FAT32 free-space detection |
 | `recovery/hybrid.py` | Hybrid scan orchestration |
 | `recovery/partitions.py` | GPT/MBR/APM partition table parsing |
