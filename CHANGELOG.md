@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Original filenames for filesystem-discovered files during hybrid/quick scans.
 - Encryption detection for live volumes (FileVault/APFS) with scan-mode guidance.
 - Redesigned web UI with workflow steps, volume cards, toasts, and static assets.
+- Expandable scan activity log with live progress stats (rate, bytes, ETA, elapsed).
+- Thumbnail grid view for image results with lazy-loaded previews.
+- Step-by-step wizard UX: one stage visible at a time (source → scan → review → recover) with gated navigation.
 
 ### Changed
 - Quick scan now tags results as `filesystem` and shows basename filenames.

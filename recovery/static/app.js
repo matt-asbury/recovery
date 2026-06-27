@@ -48,7 +48,30 @@ const els = {
   stepReview: document.getElementById("step-review"),
   stepRecover: document.getElementById("step-recover"),
   toastStack: document.getElementById("toast-stack"),
+  progressStats: document.getElementById("progress-stats"),
+  statRate: document.getElementById("stat-rate"),
+  statBytes: document.getElementById("stat-bytes"),
+  statEta: document.getElementById("stat-eta"),
+  statElapsed: document.getElementById("stat-elapsed"),
+  scanLogPanel: document.getElementById("scan-log-panel"),
+  scanLog: document.getElementById("scan-log"),
+  viewList: document.getElementById("view-list"),
+  viewGrid: document.getElementById("view-grid"),
+  filesTableWrap: document.getElementById("files-table-wrap"),
+  filesGrid: document.getElementById("files-grid"),
+  continueToScan: document.getElementById("continue-to-scan"),
+  backToSource: document.getElementById("back-to-source"),
+  continueToReview: document.getElementById("continue-to-review"),
+  backToScan: document.getElementById("back-to-scan"),
+  continueToRecover: document.getElementById("continue-to-recover"),
+  backToReview: document.getElementById("back-to-review"),
+  scanConfigSummary: document.getElementById("scan-config-summary"),
+  recoverSelectionSummary: document.getElementById("recover-selection-summary"),
+  wizardStages: document.querySelectorAll(".wizard-stage"),
+  workflowSteps: document.querySelectorAll(".workflow-step"),
 };
+
+const STAGES = ["source", "scan", "review", "recover"];
 
 let scanning = false;
 let volumeData = [];
@@ -65,6 +88,131 @@ let searchTimer = null;
 const REFRESH_INTERVAL_MS = 2500;
 let recoveryModalOpen = false;
 let recoveryModalDismissed = false;
+let resultsView = localStorage.getItem("resultsView") === "grid" ? "grid" : "list";
+let lastLogCount = 0;
+let currentStage = "source";
+let scanAttempted = false;
+let scanFinished = false;
+let initialStatusSynced = false;
+
+function selectedCount() {
+  return Number(String(els.statSelected.textContent).replace(/,/g, "")) || 0;
+}
+
+function modeLabel(mode) {
+  return mode === "deep" ? "Deep" : mode === "hybrid" ? "Hybrid" : "Quick";
+}
+
+function currentVolume() {
+  const index = Number(els.volumeSelect.value);
+  if (Number.isNaN(index)) return null;
+  return volumeData.find(v => v.index === index) || null;
+}
+
+function invalidateScanSession() {
+  scanAttempted = false;
+  scanFinished = false;
+}
+
+function canNavigateToStage(stage) {
+  if (scanning && stage !== "scan") return false;
+  if (stage === "source") return true;
+  if (stage === "scan") return hasVolumeSelected();
+  if (stage === "review") return scanAttempted && scanFinished;
+  if (stage === "recover") return scanAttempted && scanFinished && selectedCount() > 0;
+  return false;
+}
+
+function stageIndex(stage) {
+  return STAGES.indexOf(stage);
+}
+
+function setStage(stage, { force = false } = {}) {
+  if (!STAGES.includes(stage)) return;
+  const targetIdx = stageIndex(stage);
+  const currentIdx = stageIndex(currentStage);
+  if (!force) {
+    if (targetIdx > currentIdx && !canNavigateToStage(stage)) return;
+    if (scanning && stage !== "scan") return;
+  }
+
+  currentStage = stage;
+  document.body.dataset.stage = stage;
+  els.wizardStages.forEach(panel => {
+    panel.hidden = panel.dataset.stage !== stage;
+  });
+
+  if (stage === "scan") {
+    renderScanConfigSummary();
+  }
+  if (stage === "recover") {
+    renderRecoverSummary();
+  }
+  if (stage === "review") {
+    refreshFiles();
+  }
+
+  updateWorkflowSteps();
+  updateStageNav();
+}
+
+function renderScanConfigSummary() {
+  const volume = currentVolume();
+  const partitionOption = els.partitionSelect.selectedOptions[0];
+  const categories = selectedCategories();
+  const parts = [];
+  if (volume) {
+    parts.push(`<span><strong>Source</strong> ${escapeHtml(volume.display_name)}</span>`);
+  }
+  if (partitionOption) {
+    parts.push(`<span><strong>Region</strong> ${escapeHtml(partitionOption.textContent)}</span>`);
+  }
+  parts.push(`<span><strong>Mode</strong> ${escapeHtml(modeLabel(scanMode()))}</span>`);
+  parts.push(
+    `<span><strong>Types</strong> ${escapeHtml(categories.length ? categories.join(", ") : "none selected")}</span>`
+  );
+  els.scanConfigSummary.innerHTML = parts.join("");
+}
+
+function renderRecoverSummary() {
+  const count = selectedCount();
+  const size = els.statSize.textContent || "0 B";
+  const found = totalFilesFound.toLocaleString();
+  els.recoverSelectionSummary.innerHTML =
+    `<span class="recover-stat"><strong>${count.toLocaleString()}</strong> file(s) selected · <strong>${escapeHtml(size)}</strong> total</span>` +
+    `<span class="recover-stat">${found} file(s) found in the last scan</span>`;
+}
+
+function updateStageNav() {
+  const hasVolume = hasVolumeSelected();
+  const hasCategories = selectedCategories().length > 0;
+
+  els.continueToScan.disabled = !hasVolume || !hasCategories;
+  els.backToSource.disabled = scanning;
+  els.continueToReview.disabled = !scanFinished || scanning;
+  els.backToScan.disabled = scanning;
+  els.continueToRecover.disabled = selectedCount() === 0;
+}
+
+function updateWorkflowSteps() {
+  const currentIdx = stageIndex(currentStage);
+
+  els.workflowSteps.forEach(step => {
+    const stage = step.dataset.stage;
+    const idx = stageIndex(stage);
+    step.classList.remove("active", "done", "locked");
+
+    if (idx < currentIdx) {
+      step.classList.add("done");
+    } else if (idx === currentIdx) {
+      step.classList.add("active");
+    }
+
+    const reachable = idx <= currentIdx || canNavigateToStage(stage);
+    step.disabled = !reachable;
+    step.classList.toggle("locked", !reachable && idx !== currentIdx);
+  });
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -80,6 +228,165 @@ function showToast(message, type = "info") {
   toast.textContent = message;
   els.toastStack.appendChild(toast);
   setTimeout(() => toast.remove(), type === "error" ? 6000 : 4000);
+}
+
+function formatLogTime(timestamp) {
+  return new Date(timestamp * 1000).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function updateResultsView() {
+  const isGrid = resultsView === "grid";
+  els.viewList.classList.toggle("active", !isGrid);
+  els.viewGrid.classList.toggle("active", isGrid);
+  els.viewList.setAttribute("aria-pressed", String(!isGrid));
+  els.viewGrid.setAttribute("aria-pressed", String(isGrid));
+  els.filesTableWrap.hidden = isGrid;
+  els.filesGrid.hidden = !isGrid;
+}
+
+function renderProgressStats(progress) {
+  const active = scanning || progress.status === "scanning" || progress.status === "stopping";
+  const hasStats = active && (progress.bytes_scanned > 0 || progress.files_found > 0);
+  els.progressStats.hidden = !hasStats;
+  if (!hasStats) return;
+  els.statRate.innerHTML = `<strong>Rate</strong> ${escapeHtml(progress.transfer_rate_human || "—")}`;
+  els.statBytes.innerHTML =
+    `<strong>Scanned</strong> ${escapeHtml(progress.bytes_scanned_human || "0 B")}` +
+    (progress.total_bytes > 0 ? ` / ${escapeHtml(progress.total_bytes_human || "")}` : "");
+  els.statEta.innerHTML =
+    progress.eta_human && progress.eta_human !== "—"
+      ? `<strong>ETA</strong> ${escapeHtml(progress.eta_human)}`
+      : "";
+  els.statElapsed.innerHTML =
+    progress.elapsed_human && progress.elapsed_human !== "—"
+      ? `<strong>Elapsed</strong> ${escapeHtml(progress.elapsed_human)}`
+      : "";
+}
+
+function renderScanLog(entries) {
+  if (!entries || !entries.length) {
+    if (lastLogCount === 0) {
+      els.scanLog.innerHTML = '<div class="scan-log-line"><span class="scan-log-msg">No activity yet.</span></div>';
+    }
+    return;
+  }
+  const shouldScroll = els.scanLogPanel.open && entries.length > lastLogCount;
+  els.scanLog.innerHTML = entries
+    .map(entry => {
+      const level = entry.level && entry.level !== "info" ? ` level-${entry.level}` : "";
+      return `<div class="scan-log-line${level}">` +
+        `<span class="scan-log-time">${escapeHtml(formatLogTime(entry.time))}</span>` +
+        `<span class="scan-log-msg">${escapeHtml(entry.message)}</span>` +
+        `</div>`;
+    })
+    .join("");
+  lastLogCount = entries.length;
+  if (shouldScroll) {
+    els.scanLog.scrollTop = els.scanLog.scrollHeight;
+  }
+}
+
+function wireFileCheckboxes(container) {
+  container.querySelectorAll("input[type=checkbox]").forEach(box => {
+    box.addEventListener("change", async () => {
+      await api("/api/files/select", {
+        method: "POST",
+        body: JSON.stringify({
+          indices: [Number(box.dataset.index)],
+          selected: box.checked,
+        }),
+      });
+      const row = box.closest("tr");
+      if (row) row.classList.toggle("selected-row", box.checked);
+      const card = box.closest(".file-card");
+      if (card) card.classList.toggle("selected-card", box.checked);
+      await refreshSummary();
+    });
+  });
+}
+
+function renderFilesTable(data) {
+  els.filesBody.innerHTML = "";
+  if (!data.files.length) {
+    const emptyHtml = data.total
+      ? `<tr class="empty-row"><td colspan="7"><div class="empty-state compact"><p class="empty-title">No matches</p><p class="empty-sub">Try relaxing filters or search terms.</p></div></td></tr>`
+      : `<tr class="empty-row"><td colspan="7"><div class="empty-state"><div class="empty-icon">◇</div><p class="empty-title">No files yet</p><p class="empty-sub">Pick a volume and start a scan.</p></div></td></tr>`;
+    els.filesBody.innerHTML = emptyHtml;
+    return;
+  }
+
+  data.files.forEach(file => {
+    const row = document.createElement("tr");
+    if (file.selected) row.classList.add("selected-row");
+    if (previewIndex === file.index) row.classList.add("preview-row");
+    const dateTitle = file.timestamp_source === "modified"
+      ? "No creation date found; showing last modified"
+      : "";
+    row.innerHTML = `
+      <td class="col-check"><input type="checkbox" data-index="${file.index}" ${file.selected ? "checked" : ""}></td>
+      <td class="filename-cell" title="${escapeHtml(file.filename)}">${escapeHtml(file.filename)}</td>
+      <td>${escapeHtml(file.category)} <span class="badge badge-carved">.${escapeHtml(file.extension)}</span></td>
+      <td>${escapeHtml(file.size_human)}</td>
+      <td title="${escapeHtml(dateTitle)}">${escapeHtml(file.timestamp)}</td>
+      <td>${confidenceBadge(file.confidence)} ${sourceBadge(file.source_kind || "carved")}</td>
+      <td class="location-cell" title="${escapeHtml(file.offset_display)}">${escapeHtml(file.offset_display)}</td>`;
+    row.dataset.index = String(file.index);
+    row.addEventListener("click", (event) => {
+      if (event.target.tagName === "INPUT") return;
+      showPreview(file);
+    });
+    els.filesBody.appendChild(row);
+  });
+
+  wireFileCheckboxes(els.filesBody);
+}
+
+function renderFilesGrid(data) {
+  els.filesGrid.innerHTML = "";
+  if (!data.files.length) {
+    const message = data.total
+      ? "No matches — try relaxing filters."
+      : "No files yet — start a scan to populate results.";
+    els.filesGrid.innerHTML = `<div class="empty-state compact"><p>${escapeHtml(message)}</p></div>`;
+    return;
+  }
+
+  data.files.forEach(file => {
+    const card = document.createElement("article");
+    card.className = "file-card";
+    if (file.selected) card.classList.add("selected-card");
+    if (previewIndex === file.index) card.classList.add("preview-card");
+    card.dataset.index = String(file.index);
+
+    const thumbInner = file.can_preview
+      ? `<img src="/api/preview/${file.index}" alt="" loading="lazy" decoding="async">`
+      : `<span class="file-card-placeholder" aria-hidden="true">◇</span>`;
+
+    card.innerHTML = `
+      <label class="file-card-check">
+        <input type="checkbox" data-index="${file.index}" ${file.selected ? "checked" : ""}>
+      </label>
+      <div class="file-card-thumb">${thumbInner}</div>
+      <div class="file-card-meta">
+        <div class="file-card-name" title="${escapeHtml(file.filename)}">${escapeHtml(file.filename)}</div>
+        <div class="file-card-sub">
+          ${escapeHtml(file.size_human)}
+          ${confidenceBadge(file.confidence)}
+        </div>
+      </div>`;
+
+    card.addEventListener("click", (event) => {
+      if (event.target.tagName === "INPUT") return;
+      showPreview(file);
+    });
+    els.filesGrid.appendChild(card);
+  });
+
+  wireFileCheckboxes(els.filesGrid);
 }
 
 function confidenceBadge(level) {
@@ -129,12 +436,16 @@ function renderVolumeList() {
 
   els.volumeList.querySelectorAll(".volume-card").forEach(card => {
     card.addEventListener("click", () => {
+      if (els.volumeSelect.value !== card.dataset.index) {
+        invalidateScanSession();
+      }
       els.volumeSelect.value = card.dataset.index;
       renderVolumeList();
       updatePartitionSelect();
       updateEncryptionBanner();
       updateScanControls();
       updateWorkflowSteps();
+      updateStageNav();
     });
   });
 }
@@ -150,38 +461,7 @@ function updateHeaderStats(summary) {
   els.statSize.textContent = summary.selected_size_human || "0 B";
   totalFilesFound = Number(summary.total) || 0;
   updateWorkflowSteps();
-}
-
-function updateWorkflowSteps() {
-  const hasVolume = hasVolumeSelected();
-  const hasFiles = totalFilesFound > 0;
-  const steps = [els.stepSource, els.stepScan, els.stepReview, els.stepRecover];
-
-  steps.forEach(step => step.classList.remove("active", "done"));
-
-  if (!hasVolume) {
-    els.stepSource.classList.add("active");
-    return;
-  }
-
-  els.stepSource.classList.add("done");
-
-  if (scanning) {
-    els.stepScan.classList.add("active");
-    return;
-  }
-
-  els.stepScan.classList.add("done");
-
-  if (hasFiles) {
-    els.stepReview.classList.add("active");
-    if (Number(els.statSelected.textContent.replace(/,/g, "")) > 0) {
-      els.stepReview.classList.add("done");
-      els.stepRecover.classList.add("active");
-    }
-  } else {
-    els.stepScan.classList.add("active");
-  }
+  updateStageNav();
 }
 
 function openRecoveryModal(total, destination) {
@@ -370,10 +650,11 @@ function updateScanModeOptions() {
 }
 
 function updateScanControls() {
-  els.startScan.disabled = scanning || !hasVolumeSelected();
+  els.startScan.disabled = scanning;
   els.stopScan.disabled = !scanning;
   updateScanModeOptions();
   updateWorkflowSteps();
+  updateStageNav();
 }
 
 async function loadVolumes() {
@@ -471,51 +752,11 @@ async function refreshFiles(options = {}) {
   totalPages = Math.max(1, data.total_pages || 1);
   currentPage = Math.min(currentPage, totalPages - 1);
 
-  els.filesBody.innerHTML = "";
-  if (!data.files.length) {
-    const emptyHtml = data.total
-      ? `<tr class="empty-row"><td colspan="7"><div class="empty-state compact"><p class="empty-title">No matches</p><p class="empty-sub">Try relaxing filters or search terms.</p></div></td></tr>`
-      : `<tr class="empty-row"><td colspan="7"><div class="empty-state"><div class="empty-icon">◇</div><p class="empty-title">No files yet</p><p class="empty-sub">Pick a volume and start a scan.</p></div></td></tr>`;
-    els.filesBody.innerHTML = emptyHtml;
+  if (resultsView === "grid") {
+    renderFilesGrid(data);
+  } else {
+    renderFilesTable(data);
   }
-
-  data.files.forEach(file => {
-    const row = document.createElement("tr");
-    if (file.selected) row.classList.add("selected-row");
-    if (previewIndex === file.index) row.classList.add("preview-row");
-    const dateTitle = file.timestamp_source === "modified"
-      ? "No creation date found; showing last modified"
-      : "";
-    row.innerHTML = `
-      <td class="col-check"><input type="checkbox" data-index="${file.index}" ${file.selected ? "checked" : ""}></td>
-      <td class="filename-cell" title="${escapeHtml(file.filename)}">${escapeHtml(file.filename)}</td>
-      <td>${escapeHtml(file.category)} <span class="badge badge-carved">.${escapeHtml(file.extension)}</span></td>
-      <td>${escapeHtml(file.size_human)}</td>
-      <td title="${escapeHtml(dateTitle)}">${escapeHtml(file.timestamp)}</td>
-      <td>${confidenceBadge(file.confidence)} ${sourceBadge(file.source_kind || "carved")}</td>
-      <td class="location-cell" title="${escapeHtml(file.offset_display)}">${escapeHtml(file.offset_display)}</td>`;
-    row.dataset.index = String(file.index);
-    row.addEventListener("click", (event) => {
-      if (event.target.tagName === "INPUT") return;
-      showPreview(file);
-    });
-    els.filesBody.appendChild(row);
-  });
-
-  els.filesBody.querySelectorAll("input[type=checkbox]").forEach(box => {
-    box.addEventListener("change", async () => {
-      await api("/api/files/select", {
-        method: "POST",
-        body: JSON.stringify({
-          indices: [Number(box.dataset.index)],
-          selected: box.checked,
-        }),
-      });
-      const row = box.closest("tr");
-      if (row) row.classList.toggle("selected-row", box.checked);
-      await refreshSummary();
-    });
-  });
 
   els.pageLabel.textContent = data.total
     ? `Page ${currentPage + 1} of ${totalPages} · showing ${data.showing_from}-${data.showing_to}`
@@ -636,6 +877,9 @@ function highlightPreviewRows() {
   els.filesBody.querySelectorAll("tr").forEach(row => {
     row.classList.toggle("preview-row", row.dataset.index === String(previewIndex));
   });
+  els.filesGrid.querySelectorAll(".file-card").forEach(card => {
+    card.classList.toggle("preview-card", card.dataset.index === String(previewIndex));
+  });
 }
 
 let wasScanning = false;
@@ -644,8 +888,42 @@ async function pollStatus() {
   try {
     const response = await fetch("/api/scan/status");
     const data = await response.json();
+    const wasScanningBefore = scanning;
     scanning = data.scanning;
     document.body.classList.toggle("is-scanning", scanning);
+
+    if (scanning) {
+      scanAttempted = true;
+      if (currentStage !== "scan") {
+        setStage("scan", { force: true });
+      }
+    }
+
+    if (
+      !scanning &&
+      scanAttempted &&
+      data.progress.status &&
+      !["scanning", "stopping", "idle"].includes(data.progress.status)
+    ) {
+      scanFinished = true;
+    }
+
+    if (!initialStatusSynced) {
+      initialStatusSynced = true;
+      if (scanning || (data.log && data.log.length) || data.progress.files_found > 0) {
+        scanAttempted = true;
+      }
+      if (
+        !scanning &&
+        data.progress.status &&
+        !["idle", "scanning", "stopping"].includes(data.progress.status)
+      ) {
+        scanFinished = true;
+      }
+      updateStageNav();
+      updateWorkflowSteps();
+    }
+
     updateScanControls();
     updateWorkflowSteps();
     const percent = Number.isFinite(data.progress.percent) ? data.progress.percent : 0;
@@ -656,6 +934,8 @@ async function pollStatus() {
     if (data.progress.error) {
       els.statusText.textContent = data.progress.error;
     }
+    renderProgressStats(data.progress);
+    renderScanLog(data.log || []);
     updateRecoveryModal(data.recovery);
     updateRecoveryControls(data.recovery);
     const filesFound = data.progress.files_found ?? 0;
@@ -668,10 +948,18 @@ async function pollStatus() {
         scheduleRefreshFiles(true);
       }
     }
-    if (wasScanning && !scanning) {
+    if (wasScanningBefore && !scanning) {
+      scanFinished = true;
       scheduleRefreshFiles(true);
+      updateStageNav();
+      updateWorkflowSteps();
       if (!data.progress.error) {
-        showToast(data.progress.message || "Scan complete", "success");
+        showToast(data.progress.message || "Scan complete — continue to review", "success");
+        if (currentStage === "scan") {
+          els.continueToReview.focus();
+        }
+      } else {
+        showToast(data.progress.error, "error");
       }
     }
     wasScanning = scanning;
@@ -690,10 +978,64 @@ els.refreshVolumes.addEventListener("click", async () => {
 
 els.includeInternal.addEventListener("change", () => els.refreshVolumes.click());
 
+els.partitionSelect.addEventListener("change", () => {
+  invalidateScanSession();
+  updateStageNav();
+});
+
 els.volumeSelect.addEventListener("change", () => {
+  invalidateScanSession();
   updatePartitionSelect();
   updateEncryptionBanner();
   updateScanControls();
+});
+
+document.querySelectorAll('input[name="mode"], .cat').forEach(input => {
+  input.addEventListener("change", () => {
+    invalidateScanSession();
+    updateScanControls();
+  });
+});
+
+els.continueToScan.addEventListener("click", () => {
+  if (!hasVolumeSelected() || !selectedCategories().length) return;
+  setStage("scan");
+});
+
+els.backToSource.addEventListener("click", () => {
+  if (scanning) return;
+  setStage("source", { force: true });
+});
+
+els.continueToReview.addEventListener("click", () => {
+  if (!scanFinished || scanning) return;
+  setStage("review");
+});
+
+els.backToScan.addEventListener("click", () => {
+  if (scanning) return;
+  setStage("scan", { force: true });
+});
+
+els.continueToRecover.addEventListener("click", () => {
+  if (selectedCount() === 0) return;
+  setStage("recover");
+});
+
+els.backToReview.addEventListener("click", () => {
+  setStage("review", { force: true });
+});
+
+els.workflowSteps.forEach(step => {
+  step.addEventListener("click", () => {
+    const stage = step.dataset.stage;
+    if (stage === currentStage) return;
+    if (stageIndex(stage) < stageIndex(currentStage)) {
+      setStage(stage, { force: true });
+      return;
+    }
+    setStage(stage);
+  });
 });
 
 els.chooseRecoveryDir.addEventListener("click", async () => {
@@ -732,6 +1074,7 @@ els.loadImage.addEventListener("click", async () => {
 els.startScan.addEventListener("click", async () => {
   if (!hasVolumeSelected()) {
     showToast("Select a volume to scan first.", "error");
+    setStage("source");
     return;
   }
   try {
@@ -750,10 +1093,14 @@ els.startScan.addEventListener("click", async () => {
       }),
     });
     scanning = true;
+    scanAttempted = true;
+    scanFinished = false;
     lastFilesFound = -1;
+    lastLogCount = 0;
     currentPage = 0;
     updateScanControls();
     updateWorkflowSteps();
+    updateStageNav();
     showToast("Scan started", "success");
   } catch (error) {
     showToast(error.message, "error");
@@ -767,6 +1114,22 @@ els.stopScan.addEventListener("click", async () => {
 els.filter.addEventListener("change", () => refreshFiles({ resetPage: true }));
 els.extensionFilter.addEventListener("change", () => refreshFiles({ resetPage: true }));
 els.confidenceFilter.addEventListener("change", () => refreshFiles({ resetPage: true }));
+
+els.viewList.addEventListener("click", () => {
+  if (resultsView === "list") return;
+  resultsView = "list";
+  localStorage.setItem("resultsView", "list");
+  updateResultsView();
+  refreshFiles();
+});
+
+els.viewGrid.addEventListener("click", () => {
+  if (resultsView === "grid") return;
+  resultsView = "grid";
+  localStorage.setItem("resultsView", "grid");
+  updateResultsView();
+  refreshFiles();
+});
 
 els.pageSize.addEventListener("change", () => refreshFiles({ resetPage: true }));
 els.pagePrev.addEventListener("click", () => {
@@ -823,7 +1186,8 @@ els.selectNone.addEventListener("click", async () => {
 });
 
 async function syncVisibleSelections() {
-  const boxes = [...els.filesBody.querySelectorAll("input[type=checkbox]")];
+  const root = resultsView === "grid" ? els.filesGrid : els.filesBody;
+  const boxes = [...root.querySelectorAll("input[type=checkbox]")];
   await Promise.all(
     boxes.map(box =>
       api("/api/files/select", {
@@ -874,12 +1238,15 @@ els.recoverSelected.addEventListener("click", recoverSelected);
 els.recoveryModalClose.addEventListener("click", closeRecoveryModal);
 
 loadVolumes().then(async () => {
+  updateResultsView();
+  setStage("source", { force: true });
   await refreshFiles();
   lastFilesFound = 0;
 });
 setInterval(pollStatus, 1000);
 
 document.addEventListener("keydown", event => {
+  if (currentStage !== "review") return;
   if (event.key === "/" && document.activeElement !== els.fileSearch) {
     event.preventDefault();
     els.fileSearch.focus();
