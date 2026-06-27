@@ -23,6 +23,13 @@ from recovery.preview import can_preview, preview_description, render_preview
 from recovery.recover import RecoveryResult, recover_files
 from recovery.results_store import ResultsStore
 from recovery.scanner import DeepScanner, quick_scan_mount
+from recovery.security import (
+    MAX_JSON_BODY_BYTES,
+    SecurityError,
+    is_local_client,
+    validate_readable_file_path,
+    validate_recovery_destination,
+)
 from recovery.volumes import list_volumes, volume_from_image
 
 DEFAULT_PORT = 8765
@@ -110,7 +117,15 @@ class RecoveryHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
+    def _reject_non_local(self) -> bool:
+        if is_local_client(self.client_address[0]):
+            return False
+        self._respond_json({"error": "Forbidden"}, status=403)
+        return True
+
     def do_GET(self) -> None:
+        if self._reject_non_local():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._respond_html(INDEX_HTML)
@@ -138,8 +153,14 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         self._respond_json({"error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
+        if self._reject_non_local():
+            return
         parsed = urlparse(self.path)
-        body = self._read_json()
+        try:
+            body = self._read_json()
+        except ValueError as exc:
+            self._respond_json({"error": str(exc)}, status=413)
+            return
 
         routes = {
             "/api/volumes/refresh": lambda: self._handle_volumes_refresh(body),
@@ -162,6 +183,8 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         if length <= 0:
             return {}
+        if length > MAX_JSON_BODY_BYTES:
+            raise ValueError("Request body too large")
         raw = self.rfile.read(length)
         try:
             return json.loads(raw.decode("utf-8"))
@@ -200,7 +223,11 @@ class RecoveryHandler(BaseHTTPRequestHandler):
             self._respond_json({"error": "Image path is required"}, status=400)
             return
         try:
+            validate_readable_file_path(path)
             volume = STATE.add_image(path)
+        except SecurityError as exc:
+            self._respond_json({"error": str(exc)}, status=400)
+            return
         except (FileNotFoundError, ValueError, OSError) as exc:
             self._respond_json({"error": str(exc)}, status=400)
             return
@@ -369,6 +396,12 @@ class RecoveryHandler(BaseHTTPRequestHandler):
 
     def _handle_recover(self, body: dict[str, Any]) -> None:
         destination = str(body.get("destination", "")).strip() or STATE.recovery_dir
+
+        try:
+            destination = validate_recovery_destination(destination)
+        except SecurityError as exc:
+            self._respond_json({"error": str(exc)}, status=400)
+            return
 
         with STATE.lock:
             if STATE.recovery.status == RecoveryStatus.RUNNING:
