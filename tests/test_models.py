@@ -50,3 +50,18 @@ def test_found_file_defaults_not_selected() -> None:
     )
     assert found.selected is False
     assert found.filename == "recovered_000000000100.jpg"
+
+
+def test_filesystem_file_uses_original_filename() -> None:
+    found = FoundFile(
+        offset=0,
+        size=100,
+        extension="jpg",
+        category=FileCategory.IMAGE,
+        signature_name="Filesystem",
+        source_device="/Volumes/USB/vacation.jpg",
+        preview_note="/Volumes/USB/vacation.jpg",
+        source_kind="filesystem",
+    )
+    assert found.filename == "vacation.jpg"
+    assert found.is_filesystem_file

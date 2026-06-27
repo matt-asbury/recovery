@@ -15,8 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test pyramid: unit vs integration markers, coverage in CI, security and recovery tests.
 - Partition table parsing (GPT, MBR, Apple Partition Map) for disk images and whole disks.
 - Partition-scoped deep scans in the UI, CLI (`--partition`), and scanner.
+- Hybrid scan mode: filesystem walk plus carving of FAT32 unallocated space.
+- Original filenames for filesystem-discovered files during hybrid/quick scans.
 
 ### Changed
+- Quick scan now tags results as `filesystem` and shows basename filenames.
 - Recovery export validates destination paths and rejects traversal in filenames.
 - HTTP API rejects non-local clients and oversized JSON bodies.
 

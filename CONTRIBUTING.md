@@ -72,6 +72,8 @@ Guidelines:
 
 | Path | Purpose |
 |------|---------|
+| `recovery/filesystem.py` | Mounted volume walks and FAT32 free-space detection |
+| `recovery/hybrid.py` | Hybrid scan orchestration |
 | `recovery/partitions.py` | GPT/MBR/APM partition table parsing |
 | `recovery/scanner.py` | Deep and quick scan engines |
 | `recovery/signatures.py` | File type detection |
