@@ -27,6 +27,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=4.0",
 ]
 
 [project.scripts]
@@ -47,3 +48,17 @@ packages = ["recovery"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "unit: fast isolated unit tests",
+    "integration: slower tests crossing module boundaries",
+]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["recovery"]
+branch = true
+omit = ["recovery/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
