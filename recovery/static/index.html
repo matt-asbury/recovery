@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recovery — Mac Disk Recovery</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"></div>
+      <div>
+        <h1>Recovery</h1>
+        <p class="brand-tagline">Read-only disk recovery for macOS</p>
+      </div>
+    </div>
+    <nav class="workflow" aria-label="Recovery workflow">
+      <div class="workflow-step active" id="step-source"><span>1</span> Source</div>
+      <div class="workflow-line"></div>
+      <div class="workflow-step" id="step-scan"><span>2</span> Scan</div>
+      <div class="workflow-line"></div>
+      <div class="workflow-step" id="step-review"><span>3</span> Review</div>
+      <div class="workflow-line"></div>
+      <div class="workflow-step" id="step-recover"><span>4</span> Recover</div>
+    </nav>
+    <div class="header-stats" id="header-stats" hidden>
+      <div class="stat"><span class="stat-value" id="stat-found">0</span><span class="stat-label">Found</span></div>
+      <div class="stat"><span class="stat-value" id="stat-selected">0</span><span class="stat-label">Selected</span></div>
+      <div class="stat"><span class="stat-value" id="stat-size">0 B</span><span class="stat-label">To recover</span></div>
+    </div>
+  </header>
+
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div id="sudo-banner" class="callout callout-warn" hidden>
+        Deep scans of raw disks need administrator access. Restart with
+        <code>sudo ./recovery.sh</code>
+      </div>
+      <div id="encryption-banner" class="callout callout-lock" hidden></div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Source</h2>
+          <button id="refresh-volumes" class="btn btn-ghost btn-sm" type="button">Refresh</button>
+        </div>
+        <div id="volume-list" class="volume-list">
+          <div class="empty-state compact">
+            <p>Loading volumes…</p>
+          </div>
+        </div>
+        <select id="volume-select" hidden aria-hidden="true"></select>
+
+        <label class="field-label" for="partition-select">Scan region</label>
+        <select id="partition-select" class="field" disabled>
+          <option value="-1">Whole disk</option>
+        </select>
+
+        <label class="toggle-row">
+          <input type="checkbox" id="include-internal">
+          <span>Show internal disks</span>
+        </label>
+
+        <details class="image-loader">
+          <summary>Load disk image</summary>
+          <label class="field-label" for="image-path">Image path</label>
+          <input id="image-path" class="field" type="text" placeholder="/Users/you/disk.img">
+          <button id="load-image" class="btn btn-secondary" type="button">Load image</button>
+        </details>
+      </section>
+
+      <section class="panel">
+        <h2>Scan mode</h2>
+        <div class="mode-grid">
+          <label class="mode-card">
+            <input type="radio" name="mode" value="deep">
+            <strong>Deep</strong>
+            <span>Carve recoverable files from raw blocks</span>
+          </label>
+          <label class="mode-card mode-card-featured">
+            <input type="radio" name="mode" value="hybrid" checked>
+            <strong>Hybrid</strong>
+            <span>Live files first, then unallocated space</span>
+            <em class="mode-badge">Recommended</em>
+          </label>
+          <label class="mode-card">
+            <input type="radio" name="mode" value="quick">
+            <strong>Quick</strong>
+            <span>Walk mounted files only — fastest when FS works</span>
+          </label>
+        </div>
+
+        <p class="field-label">File types</p>
+        <div class="chip-row checks">
+          <label class="chip"><input type="checkbox" class="cat" value="image" checked><span>Images</span></label>
+          <label class="chip"><input type="checkbox" class="cat" value="video" checked><span>Videos</span></label>
+          <label class="chip"><input type="checkbox" class="cat" value="document" checked><span>Docs</span></label>
+          <label class="chip"><input type="checkbox" class="cat" value="archive" checked><span>Archives</span></label>
+          <label class="chip"><input type="checkbox" class="cat" value="other" checked><span>Other</span></label>
+        </div>
+
+        <div class="action-row">
+          <button id="start-scan" class="btn btn-primary" type="button" disabled>Start scan</button>
+          <button id="stop-scan" class="btn btn-secondary" type="button" disabled>Stop</button>
+        </div>
+      </section>
+
+      <section class="panel panel-recover">
+        <h2>Recover to</h2>
+        <p id="recovery-size" class="hint">Nothing selected yet</p>
+        <label class="field-label" for="recovery-dir">Destination folder</label>
+        <div class="input-group">
+          <input id="recovery-dir" class="field" type="text" placeholder="Choose a folder…">
+          <button id="choose-recovery-dir" class="btn btn-secondary" type="button">Choose…</button>
+        </div>
+        <button id="recover-selected" class="btn btn-primary btn-block" type="button">Recover selected</button>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="panel panel-progress">
+        <div class="panel-head">
+          <h2>Scan progress</h2>
+          <span id="progress-text" class="progress-pct">0%</span>
+        </div>
+        <p id="status-text" class="status-line">Select a source volume to begin.</p>
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+      </section>
+
+      <section class="panel panel-results">
+        <div class="panel-head">
+          <h2>Found files</h2>
+          <div class="toolbar">
+            <select id="filter" class="field field-inline" aria-label="Category">
+              <option value="all">All categories</option>
+              <option value="image">Images</option>
+              <option value="video">Videos</option>
+              <option value="document">Documents</option>
+              <option value="archive">Archives</option>
+              <option value="other">Other</option>
+            </select>
+            <select id="extension-filter" class="field field-inline" aria-label="Extension">
+              <option value="all">All types</option>
+            </select>
+            <select id="confidence-filter" class="field field-inline" aria-label="Confidence">
+              <option value="medium" selected>Medium+</option>
+              <option value="high">High only</option>
+              <option value="low">All confidence</option>
+            </select>
+            <button id="select-all" class="btn btn-ghost btn-sm" type="button">Select filtered</button>
+            <button id="select-none" class="btn btn-ghost btn-sm" type="button">Clear</button>
+          </div>
+        </div>
+
+        <p id="files-summary" class="summary-line">No files yet — start a scan to populate results.</p>
+        <div id="large-set-notice" class="callout callout-info" hidden>
+          Large result set — results are paginated. Narrow with search and filters before recovering.
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="col-check"></th>
+                <th>Filename</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Date</th>
+                <th>Quality</th>
+                <th>Location</th>
+              </tr>
+            </thead>
+            <tbody id="files-body">
+              <tr class="empty-row">
+                <td colspan="7">
+                  <div class="empty-state">
+                    <div class="empty-icon" aria-hidden="true">◇</div>
+                    <p class="empty-title">No files to show</p>
+                    <p class="empty-sub">Pick a volume, choose a scan mode, and press Start scan.</p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pager">
+          <button id="page-prev" class="btn btn-ghost btn-sm" type="button">Previous</button>
+          <span id="page-label" class="pager-label">Page 1 of 1</span>
+          <button id="page-next" class="btn btn-ghost btn-sm" type="button">Next</button>
+          <select id="page-size" class="field field-inline" aria-label="Rows per page">
+            <option value="50">50 rows</option>
+            <option value="100" selected>100 rows</option>
+            <option value="200">200 rows</option>
+          </select>
+          <input id="file-search" class="field field-search" type="search" placeholder="Search name or offset (press /)">
+        </div>
+      </section>
+    </main>
+
+    <aside class="inspector">
+      <section class="panel panel-preview">
+        <h2>Preview</h2>
+        <div id="preview-box" class="preview-stage">
+          <div class="empty-state compact">
+            <div class="empty-icon" aria-hidden="true">▢</div>
+            <p>Select a file to preview</p>
+          </div>
+        </div>
+        <div id="preview-meta" class="preview-meta"></div>
+      </section>
+    </aside>
+  </div>
+
+  <div id="recovery-modal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-labelledby="recovery-modal-title" aria-modal="true">
+      <h2 id="recovery-modal-title">Recovering files</h2>
+      <p id="recovery-modal-text"></p>
+      <div class="progress-track"><div id="recovery-modal-fill" class="progress-fill"></div></div>
+      <div id="recovery-modal-detail" class="modal-detail"></div>
+      <div class="modal-actions">
+        <button id="recovery-modal-close" class="btn btn-primary" type="button" hidden>Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+  <div id="top-message" class="sr-only" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
