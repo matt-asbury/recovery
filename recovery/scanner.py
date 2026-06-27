@@ -9,6 +9,7 @@ from typing import Callable, Optional
 from recovery.models import FoundFile, ScanProgress, ScanStatus, VolumeInfo
 from recovery.signatures import SIGNATURES, FileSignature
 from recovery.timestamps import HEADER_BYTES, extract_timestamps, stat_timestamps
+from recovery.validation import validate_carved
 
 
 DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024
@@ -42,6 +43,7 @@ class DeepScanner:
         self._thread: Optional[threading.Thread] = None
         self._found: list[FoundFile] = []
         self._seen_offsets: set[int] = set()
+        self._rejected_count: int = 0
         self._start_time: float = 0.0
 
     @property
@@ -59,6 +61,7 @@ class DeepScanner:
         self._stop_event.clear()
         self._found.clear()
         self._seen_offsets.clear()
+        self._rejected_count = 0
         self.progress = ScanProgress(status=ScanStatus.SCANNING)
 
         self._thread = threading.Thread(
@@ -129,8 +132,11 @@ class DeepScanner:
                 self.progress.current_message = "Scan stopped by user."
             else:
                 self.progress.status = ScanStatus.COMPLETE
+                rejected_note = ""
+                if self._rejected_count:
+                    rejected_note = f" ({self._rejected_count:,} low-quality hits filtered)"
                 self.progress.current_message = (
-                    f"Scan complete. Found {len(self._found)} recoverable file(s)."
+                    f"Scan complete. Found {len(self._found)} recoverable file(s){rejected_note}."
                 )
         except PermissionError:
             self.progress.status = ScanStatus.ERROR
@@ -178,6 +184,17 @@ class DeepScanner:
                 if signature.name == "ZIP" and _looks_like_docx(data, idx, size):
                     continue
 
+                snippet = data[idx : idx + size]
+                validation = validate_carved(
+                    snippet,
+                    signature.extension,
+                    signature.name,
+                    signature.confidence,
+                )
+                if not validation.accepted:
+                    self._rejected_count += 1
+                    continue
+
                 self._seen_offsets.add(absolute_offset)
                 header_end = min(len(data), idx + min(size, HEADER_BYTES))
                 times = extract_timestamps(data[idx:header_end], signature.extension)
@@ -188,7 +205,7 @@ class DeepScanner:
                     category=signature.category,
                     signature_name=signature.name,
                     source_device=self.volume.read_path,
-                    confidence=signature.confidence,
+                    confidence=validation.confidence,
                     created_at=times.created,
                     modified_at=times.modified,
                 )
