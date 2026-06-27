@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, Tuple
 
 
 class ScanStatus(str, Enum):
@@ -30,6 +30,26 @@ class FileCategory(str, Enum):
 
 
 @dataclass(frozen=True)
+class PartitionInfo:
+    index: int
+    start_byte: int
+    size_bytes: int
+    type_label: str
+    name: str = ""
+    scheme: str = ""
+
+    @property
+    def end_byte(self) -> int:
+        return self.start_byte + self.size_bytes
+
+    @property
+    def display_label(self) -> str:
+        title = self.name or self.type_label or "Partition"
+        size_mb = self.size_bytes / (1024 * 1024)
+        return f"{title} — {size_mb:.1f} MB @ 0x{self.start_byte:x}"
+
+
+@dataclass(frozen=True)
 class VolumeInfo:
     device_id: str
     name: str
@@ -41,14 +61,35 @@ class VolumeInfo:
     whole_disk: bool
     is_disk_image: bool = False
     image_path: Optional[str] = None
+    partitions: Tuple[PartitionInfo, ...] = ()
+    scan_start_byte: int = 0
+    scan_size_bytes: Optional[int] = None
+
+    @property
+    def scan_end_byte(self) -> int:
+        if self.scan_size_bytes is None:
+            return self.size_bytes
+        return self.scan_start_byte + self.scan_size_bytes
+
+    @property
+    def scan_byte_count(self) -> int:
+        return max(0, self.scan_end_byte - self.scan_start_byte)
+
+    @property
+    def is_partition_scan(self) -> bool:
+        return self.scan_start_byte > 0 or self.scan_size_bytes is not None
 
     @property
     def display_name(self) -> str:
-        size_gb = self.size_bytes / (1024**3)
+        size_gb = self.scan_byte_count / (1024**3)
         if self.is_disk_image:
-            return f"[Image] {self.name} — {size_gb:.1f} GB [{self.image_path}]"
-        mount = f" @ {self.mount_point}" if self.mount_point else " (unmounted)"
-        return f"{self.name} — {size_gb:.1f} GB{mount} [{self.device_id}]"
+            base = f"[Image] {self.name} — {size_gb:.1f} GB [{self.image_path}]"
+        else:
+            mount = f" @ {self.mount_point}" if self.mount_point else " (unmounted)"
+            base = f"{self.name} — {size_gb:.1f} GB{mount} [{self.device_id}]"
+        if self.is_partition_scan:
+            return f"{base} (partition @ 0x{self.scan_start_byte:x})"
+        return base
 
     @property
     def raw_device(self) -> str:
