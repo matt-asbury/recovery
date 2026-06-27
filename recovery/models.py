@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Tuple
@@ -121,11 +122,18 @@ class FoundFile:
     preview_note: str = ""
     created_at: Optional[float] = None
     modified_at: Optional[float] = None
+    source_kind: str = "carved"
     selected: bool = field(default=False, compare=False)
 
     @property
     def filename(self) -> str:
+        if self.source_kind == "filesystem" and self.preview_note:
+            return os.path.basename(self.preview_note)
         return f"recovered_{self.offset:012x}.{self.extension}"
+
+    @property
+    def is_filesystem_file(self) -> bool:
+        return self.source_kind == "filesystem"
 
     @property
     def size_human(self) -> str:
