@@ -6,9 +6,10 @@ import threading
 import time
 from typing import Callable, Optional
 
+from recovery.filesystem import walk_filesystem
 from recovery.models import FoundFile, ScanProgress, ScanStatus, VolumeInfo
 from recovery.signatures import SIGNATURES, FileSignature
-from recovery.timestamps import HEADER_BYTES, extract_timestamps, stat_timestamps
+from recovery.timestamps import HEADER_BYTES, extract_timestamps
 from recovery.validation import validate_carved
 
 
@@ -30,6 +31,7 @@ class DeepScanner:
         max_file_size: int = DEFAULT_MAX_FILE_SIZE,
         min_file_size: int = DEFAULT_MIN_FILE_SIZE,
         categories: Optional[set[str]] = None,
+        carve_regions: Optional[list[tuple[int, int]]] = None,
     ) -> None:
         self.volume = volume
         self.chunk_size = chunk_size
@@ -37,6 +39,7 @@ class DeepScanner:
         self.max_file_size = max_file_size
         self.min_file_size = min_file_size
         self.categories = categories
+        self.carve_regions = carve_regions
 
         self.progress = ScanProgress()
         self._stop_event = threading.Event()
@@ -49,6 +52,10 @@ class DeepScanner:
     @property
     def results(self) -> list[FoundFile]:
         return list(self._found)
+
+    @property
+    def rejected_count(self) -> int:
+        return self._rejected_count
 
     def start(
         self,
@@ -112,10 +119,15 @@ class DeepScanner:
             self._notify_progress(on_progress)
             return
 
-        total = scan_size
+        regions = self._resolve_carve_regions(scan_start, scan_size)
+        total = sum(size for _, size in regions)
         self.progress.total_bytes = total
         label = self.volume.name if self.volume.is_disk_image else device
-        if self.volume.is_partition_scan:
+        if self.carve_regions is not None:
+            self.progress.current_message = (
+                f"Carving {len(regions)} unallocated region(s) on {label}..."
+            )
+        elif self.volume.is_partition_scan:
             self.progress.current_message = (
                 f"Scanning {label} (0x{scan_start:x}–0x{scan_start + scan_size:x})..."
             )
@@ -124,28 +136,35 @@ class DeepScanner:
         self._start_time = time.monotonic()
 
         try:
-            with open(device, "rb", buffering=0) as handle:
-                handle.seek(scan_start)
-                offset = scan_start
-                carry = b""
+            bytes_scanned = 0
+            for region_start, region_size in regions:
+                if self._stop_event.is_set():
+                    break
 
-                while offset < scan_start + total and not self._stop_event.is_set():
-                    read_size = min(self.chunk_size, scan_start + total - offset)
-                    chunk = handle.read(read_size)
-                    if not chunk:
-                        break
+                region_end = region_start + region_size
+                with open(device, "rb", buffering=0) as handle:
+                    handle.seek(region_start)
+                    offset = region_start
+                    carry = b""
 
-                    window = carry + chunk
-                    base_offset = offset - len(carry)
+                    while offset < region_end and not self._stop_event.is_set():
+                        read_size = min(self.chunk_size, region_end - offset)
+                        chunk = handle.read(read_size)
+                        if not chunk:
+                            break
 
-                    self._scan_window(window, base_offset, on_file)
+                        window = carry + chunk
+                        base_offset = offset - len(carry)
 
-                    carry = window[-self.overlap :] if len(window) > self.overlap else window
-                    offset += len(chunk)
+                        self._scan_window(window, base_offset, on_file)
 
-                    self.progress.bytes_scanned = offset - scan_start
-                    self._update_timing()
-                    self._notify_progress(on_progress)
+                        carry = window[-self.overlap :] if len(window) > self.overlap else window
+                        offset += len(chunk)
+
+                        bytes_scanned += len(chunk)
+                        self.progress.bytes_scanned = bytes_scanned
+                        self._update_timing()
+                        self._notify_progress(on_progress)
 
             if self._stop_event.is_set():
                 self.progress.status = ScanStatus.COMPLETE
@@ -173,6 +192,20 @@ class DeepScanner:
             self.progress.error = f"Error reading {device}: {exc}"
         finally:
             self._notify_progress(on_progress)
+
+    def _resolve_carve_regions(self, scan_start: int, scan_size: int) -> list[tuple[int, int]]:
+        scan_end = scan_start + scan_size
+        if self.carve_regions is None:
+            return [(scan_start, scan_size)]
+
+        clipped: list[tuple[int, int]] = []
+        for start, size in self.carve_regions:
+            end = start + size
+            clip_start = max(start, scan_start)
+            clip_end = min(end, scan_end)
+            if clip_end > clip_start:
+                clipped.append((clip_start, clip_end - clip_start))
+        return clipped or [(scan_start, scan_size)]
 
     def _scan_window(
         self,
@@ -228,6 +261,7 @@ class DeepScanner:
                     confidence=validation.confidence,
                     created_at=times.created,
                     modified_at=times.modified,
+                    source_kind="carved",
                 )
                 self._found.append(found)
                 self.progress.files_found = len(self._found)
@@ -266,68 +300,10 @@ def _looks_like_docx(data: bytes, start: int, size: int) -> bool:
     return b"word/" in snippet or b"[Content_Types].xml" in snippet
 
 
-def quick_scan_mount(mount_point: str) -> list[FoundFile]:
+def quick_scan_mount(
+    mount_point: str,
+    *,
+    categories: Optional[set[str]] = None,
+) -> list[FoundFile]:
     """Walk a mounted filesystem for existing files (non-destructive listing)."""
-    found: list[FoundFile] = []
-    extensions = {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".gif",
-        ".bmp",
-        ".tif",
-        ".tiff",
-        ".mp4",
-        ".mov",
-        ".avi",
-        ".mkv",
-        ".pdf",
-        ".doc",
-        ".docx",
-        ".xls",
-        ".xlsx",
-        ".ppt",
-        ".pptx",
-        ".zip",
-        ".rtf",
-        ".html",
-        ".mp3",
-        ".wav",
-    }
-
-    for root, _dirs, files in os.walk(mount_point):
-        for name in files:
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in extensions:
-                continue
-            path = os.path.join(root, name)
-            try:
-                stat = os.stat(path)
-            except OSError:
-                continue
-            from recovery.models import FileCategory
-            from recovery.signatures import CATEGORY_EXTENSIONS
-
-            category = FileCategory.OTHER
-            ext_clean = ext.lstrip(".")
-            for cat, exts in CATEGORY_EXTENSIONS.items():
-                if ext_clean in exts:
-                    category = cat
-                    break
-
-            times = stat_timestamps(path)
-            found.append(
-                FoundFile(
-                    offset=0,
-                    size=stat.st_size,
-                    extension=ext_clean or "bin",
-                    category=category,
-                    signature_name="Existing file",
-                    source_device=path,
-                    confidence="high",
-                    preview_note=path,
-                    created_at=times.created,
-                    modified_at=times.modified,
-                )
-            )
-    return found
+    return walk_filesystem(mount_point, categories=categories)
