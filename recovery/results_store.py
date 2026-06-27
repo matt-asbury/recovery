@@ -40,8 +40,9 @@ class ResultsStore:
             """
             INSERT INTO found_files (
                 file_index, offset, size, extension, category, signature_name,
-                source_device, confidence, preview_note, created_at, modified_at, selected
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_device, confidence, preview_note, created_at, modified_at,
+                selected, source_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 index,
@@ -56,6 +57,7 @@ class ResultsStore:
                 found.created_at,
                 found.modified_at,
                 1 if found.selected else 0,
+                found.source_kind,
             ),
         )
         self._conn.commit()
@@ -285,6 +287,14 @@ class ResultsStore:
             """
         )
         self._conn.commit()
+        self._ensure_column("source_kind", "TEXT NOT NULL DEFAULT 'carved'")
+
+    def _ensure_column(self, name: str, definition: str) -> None:
+        rows = self._conn.execute("PRAGMA table_info(found_files)").fetchall()
+        if any(row["name"] == name for row in rows):
+            return
+        self._conn.execute(f"ALTER TABLE found_files ADD COLUMN {name} {definition}")
+        self._conn.commit()
 
 
 def _row_to_found(row: sqlite3.Row) -> FoundFile:
@@ -299,6 +309,7 @@ def _row_to_found(row: sqlite3.Row) -> FoundFile:
         preview_note=row["preview_note"],
         created_at=row["created_at"],
         modified_at=row["modified_at"],
+        source_kind=row["source_kind"] if "source_kind" in row.keys() else "carved",
         selected=bool(row["selected"]),
     )
 
@@ -350,11 +361,12 @@ def _filtered_query(
             "LOWER(extension) LIKE ? OR "
             "LOWER(signature_name) LIKE ? OR "
             "LOWER(preview_note) LIKE ? OR "
+            "LOWER(source_kind) LIKE ? OR "
             "LOWER(printf('%x', offset)) LIKE ? OR "
             "LOWER(printf('0x%x', offset)) LIKE ?"
             ")"
         )
-        params.extend([like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like])
 
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     query = select_clause + where
