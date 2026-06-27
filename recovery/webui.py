@@ -22,6 +22,7 @@ from recovery.models import (
 from recovery.preview import can_preview, preview_description, render_preview
 from recovery.recover import RecoveryResult, recover_files
 from recovery.results_store import ResultsStore
+from recovery.hybrid import HybridScanner
 from recovery.scanner import DeepScanner, quick_scan_mount
 from recovery.security import (
     MAX_JSON_BODY_BYTES,
@@ -42,7 +43,7 @@ class AppState:
         self.lock = threading.Lock()
         self.volumes: list[VolumeInfo] = []
         self.results = ResultsStore()
-        self.scanner: Optional[DeepScanner] = None
+        self.scanner: Optional[DeepScanner | HybridScanner] = None
         self.progress = ScanProgress()
         self.scanning = False
         self.recovery = RecoveryProgress()
@@ -73,8 +74,9 @@ class AppState:
             "timestamp": found.timestamp_display,
             "timestamp_source": found.timestamp_source,
             "confidence": found.confidence,
+            "source_kind": found.source_kind,
             "selected": found.selected,
-            "offset_display": found.preview_note or f"0x{found.offset:x}",
+            "offset_display": found.preview_note if found.is_filesystem_file else (found.preview_note or f"0x{found.offset:x}"),
             "can_preview": can_preview(found),
         }
 
@@ -286,6 +288,19 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 args=(volume, category_set),
                 daemon=True,
             ).start()
+            self._respond_json({"ok": True})
+            return
+
+        if mode == "hybrid":
+            with STATE.lock:
+                STATE.results.clear()
+                STATE.scanning = True
+                STATE.progress = ScanProgress(status=ScanStatus.SCANNING)
+                STATE.scanner = HybridScanner(volume, categories=category_set)
+
+            scanner = STATE.scanner
+            assert isinstance(scanner, HybridScanner)
+            scanner.start(on_file=_on_file_found, on_progress=_on_progress)
             self._respond_json({"ok": True})
             return
 
@@ -563,9 +578,7 @@ def _on_progress(progress: ScanProgress) -> None:
 
 def _run_quick_scan(volume: VolumeInfo, categories: Optional[set[str]]) -> None:
     try:
-        files = quick_scan_mount(volume.mount_point or "")
-        if categories:
-            files = [item for item in files if item.category.value in categories]
+        files = quick_scan_mount(volume.mount_point or "", categories=categories)
         with STATE.lock:
             STATE.results.extend(files)
             STATE.progress = ScanProgress(
@@ -915,7 +928,8 @@ INDEX_HTML = """<!DOCTYPE html>
       <section class="panel">
         <h2>Scan Options</h2>
         <label><input type="radio" name="mode" value="deep" checked> Deep scan (file carving)</label>
-        <label><input type="radio" name="mode" value="quick"> Quick scan (mounted files)</label>
+        <label><input type="radio" name="mode" value="hybrid"> Hybrid (filesystem + unallocated carve)</label>
+        <label><input type="radio" name="mode" value="quick"> Quick scan (mounted files only)</label>
         <div class="checks" style="margin-top:10px;">
           <label><input type="checkbox" class="cat" value="image" checked> Images</label>
           <label><input type="checkbox" class="cat" value="video" checked> Videos</label>
